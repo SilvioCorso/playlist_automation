@@ -1,0 +1,84 @@
+{
+  "music_folder": "E:/",
+  "serato_folder": "",
+  "output_folder": "C:\\Users\\fulvi\\Desktop",
+  "match_thresholds": {
+    "exact": 100,
+    "token_sort": 85,
+    "token_set": 75,
+    "partial": 60
+  },
+  "audio_extensions": [
+    ".mp3",
+    ".flac",
+    ".m4a",
+    ".wav",
+    ".aiff",
+    ".ogg",
+    ".wma",
+    ".aac"
+  ],
+  "fuzzy_cache_enabled": true,
+  "theme": "dark",
+  "visible_columns": {
+    "score": true,
+    "found": true,
+    "titolo_richiesto": true,
+    "select": true,
+    "lock": true,
+    "filename": true,
+    "artista_serato": true,
+    "song_serato": true,
+    "genre": true,
+    "bpm": true,
+    "comment": true,
+    "player": true,
+    "hotcue": true
+  },
+  "bpm_penalty_enabled": false,
+  "bpm_reference": 0,
+  "font_size": 11,
+  "language": "it",
+  "dj_software": "serato",
+  "settings_dialog_size": {
+    "width": 832,
+    "height": 605
+  },
+  "auto_update": false,
+  "skip_rescan_dialog": false,
+  "default_rescan_answer": "yes",
+  "results_table_columns": {
+    "order": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      8,
+      9,
+      11,
+      6,
+      7,
+      10,
+      12
+    ],
+    "widths": {
+      "0": 50,
+      "1": 40,
+      "2": 69,
+      "3": 65,
+      "4": 438,
+      "5": 503,
+      "6": 192,
+      "7": 432,
+      "8": 95,
+      "9": 79,
+      "10": 40,
+      "11": 141,
+      "12": 100
+    }
+  },
+  "table_fit_columns": false,
+  "license_pro": false
+}
