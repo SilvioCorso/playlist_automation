@@ -1,2 +1,5 @@
 serato_automation/__pycache__/
 serato_debug.log
+venv/
+__pycache__/
+*.pyc

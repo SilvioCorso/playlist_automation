@@ -10,11 +10,13 @@ if _project_root not in sys.path:
 
 
 def check_dependencies():
+    """Return a list of missing required dependencies (empty = all OK)."""
     missing = []
-    try:
-        import PySide6
-    except ImportError:
-        missing.append("PySide6")
+    for module_name in ("PySide6", "rapidfuzz", "mutagen", "send2trash"):
+        try:
+            __import__(module_name)
+        except ImportError:
+            missing.append(module_name)
     return missing
 
 
@@ -31,8 +33,18 @@ def main():
         for dep in missing:
             print(f"  - {dep}")
         print()
-        print("Installa con: pip install " + " ".join(missing))
-        input("Premi Invio per uscire...")
+        print("Per installare tutto automaticamente:")
+        print("  - Doppio click su launch_silently.pyw  (avvio silenzioso)")
+        print("  - Oppure: start.bat  (con finestra console)")
+        print()
+        print("Oppure installa manualmente con:")
+        print(f"  pip install -r requirements.txt")
+        print("  python -m playwright install chromium")
+        print()
+        try:
+            input("Premi Invio per uscire...")
+        except EOFError:
+            pass
         sys.exit(1)
 
     from serato_automation.ui_main import run_app

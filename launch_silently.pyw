@@ -1,37 +1,320 @@
 # Serato Playlist Automation - Silent Launcher (.pyw)
-# Avvia il software senza finestra CMD
-# Doppio click su questo file per avviare il programma
+# Avvia il software senza finestra CMD.
 #
-# NOTA: Su Windows, i file .pyw vengono eseguiti da pythonw.exe
-# che non apre la finestra della console.
+# Doppio click su questo file per avviare il programma.
 #
-# Se non funziona con doppio click:
-# 1. Assicurati che Python sia installato
-# 2. Assicurati che l'associazione .pyw -> pythonw.exe sia attiva
-# 3. In alternativa, usa launch_silently.vbs
+# AL PRIMO AVVIO (o dopo aver eliminato la cartella `venv`):
+#   - Verifica che Python 3.10+ sia installato
+#   - Crea automaticamente un virtualenv in `venv/`
+#   - Installa tutte le dipendenze da `requirements.txt`
+#     (PySide6, rapidfuzz, mutagen, Send2Trash, playwright)
+#   - Esegue `playwright install chromium` per Amazon Music
+#   - Mostra il progresso in una finestra di dialogo (niente console)
+#
+# SUGLI AVVI SUCCESSIVI:
+#   - Usa direttamente il Python del virtualenv (avvio immediato)
+#
+# NOTA: Su Windows i file .pyw vengono eseguiti da pythonw.exe senza console.
+# Se il doppio click non funziona, usa `start.bat` o `run.bat`.
 
 import sys
 import os
+import subprocess
+import shutil
+import json
+import time
 
-_project_root = os.path.dirname(os.path.abspath(__file__))
-if _project_root not in sys.path:
-    sys.path.insert(0, _project_root)
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
 
-# Check dependencies
-try:
-    import PySide6
-except ImportError:
-    # If launched via .pyw, show a messagebox instead of console print
+_PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+_VENV_DIR = os.path.join(_PROJECT_ROOT, "venv")
+_VENV_PY = os.path.join(_VENV_DIR, "Scripts", "python.exe")
+_VENV_PIP = os.path.join(_VENV_DIR, "Scripts", "pip.exe")
+_REQUIREMENTS = os.path.join(_PROJECT_ROOT, "requirements.txt")
+
+# Marker file written once the bootstrap completes successfully.
+# Its presence lets us skip the (slow) dependency check on subsequent launches.
+_BOOTSTRAP_MARKER = os.path.join(_VENV_DIR, ".bootstrap_done")
+
+MIN_PY = (3, 10)
+
+
+# ---------------------------------------------------------------------------
+# UI helpers (no PySide6 yet — use ctypes MessageBox during bootstrap)
+# ---------------------------------------------------------------------------
+
+def _msg_box(message, title="Serato Playlist Automation", kind="info"):
+    """Show a native Windows message box without any third-party dep."""
     try:
         import ctypes
-        ctypes.windll.user32.MessageBoxW(0,
-            "PySide6 non e' installato!\n\n"
-            "Esegui install.bat prima di usare questo launcher.",
-            "Errore - Serato Playlist Automation",
-            0x10)
+        flags = {
+            "info":    0x40,        # MB_ICONINFORMATION
+            "warn":    0x30,        # MB_ICONWARNING
+            "error":   0x10,        # MB_ICONERROR
+            "question": 0x20,       # MB_ICONQUESTION
+        }.get(kind, 0x40)
+        # MB_SETFOREGROUND | MB_TOPMOST | MB_OK
+        flags |= 0x10000 | 0x40000 | 0x00000000
+        ctypes.windll.user32.MessageBoxW(0, str(message), str(title), flags)
+    except Exception:
+        # Non-Windows or ctypes unavailable — print to stderr (ignored by pythonw).
+        print(f"[{title}] {message}", file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
+# Bootstrap
+# ---------------------------------------------------------------------------
+
+def _find_system_python():
+    """Find a usable system Python (>= MIN_PY) on PATH or via py launcher."""
+    candidates = []
+
+    # 1) py launcher (recommended way on Windows)
+    py_exe = shutil.which("py")
+    if py_exe:
+        candidates.append((py_exe, ["-3"]))
+
+    # 2) plain `python` on PATH
+    for name in ("python", "python3"):
+        exe = shutil.which(name)
+        if exe:
+            candidates.append((exe, []))
+
+    # 3) well-known install locations
+    for env_var in ("LOCALAPPDATA", "PROGRAMFILES", "PROGRAMFILES(X86)"):
+        base = os.environ.get(env_var)
+        if not base:
+            continue
+        for ver in ("3.13", "3.12", "3.11", "3.10"):
+            exe = os.path.join(base, "Python" + ver, "python.exe")
+            if os.path.exists(exe):
+                candidates.append((exe, []))
+
+    for exe, extra_args in candidates:
+        try:
+            proc = subprocess.run(
+                [exe, "--version"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if proc.returncode != 0:
+                continue
+            # Output: "Python 3.12.1"
+            ver_str = (proc.stdout or proc.stderr).strip().lower()
+            if not ver_str.startswith("python "):
+                continue
+            ver = ver_str.split()[1].split(".")
+            major, minor = int(ver[0]), int(ver[1])
+            if (major, minor) >= MIN_PY:
+                return exe, extra_args
+        except Exception:
+            continue
+
+    return None, []
+
+
+def _run_streamed(cmd, cwd=None):
+    """Run a subprocess and stream its output to stdout/stderr.
+
+    With pythonw.exe there is no console, so this is effectively silent,
+    but if a console is attached (e.g. when launched from `python launch_silently.pyw`)
+    the user sees the install progress.
+    """
+    # subprocess.DEVNULL would hide everything; we keep stdout/stderr attached
+    # so debugging is possible from a terminal. pythonw.exe silently discards them.
+    return subprocess.run(cmd, cwd=cwd)
+
+
+def _ensure_pip(python_exe):
+    """Make sure pip is available in the given Python."""
+    try:
+        proc = subprocess.run(
+            [python_exe, "-m", "pip", "--version"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if proc.returncode == 0:
+            return True
     except Exception:
         pass
-    sys.exit(1)
+    # Try ensurepip
+    try:
+        subprocess.run(
+            [python_exe, "-m", "ensurepip", "--upgrade"],
+            timeout=60,
+        )
+        return True
+    except Exception:
+        return False
 
-from serato_automation.ui_main import run_app
-run_app()
+
+def _bootstrap():
+    """Create the virtualenv and install all dependencies.
+
+    Returns the path of the venv python.exe to use for running the app,
+    or None on failure (in which case an error message has already been shown).
+    """
+    # 1) Find a suitable system Python
+    sys_py, extra_args = _find_system_python()
+    if not sys_py:
+        _msg_box(
+            "Python non trovato oppure versione troppo vecchia.\n\n"
+            f"E' richiesto Python {MIN_PY[0]}.{MIN_PY[1]} o superiore.\n\n"
+            "Scaricalo da: https://www.python.org/downloads/\n\n"
+            "IMPORTANTE: durante l'installazione spunta\n"
+            "    [x] Add Python to PATH",
+            title="Errore - Python mancante",
+            kind="error",
+        )
+        return None
+
+    # 2) Create the virtualenv (idempotent)
+    if not os.path.exists(_VENV_PY):
+        _msg_box(
+            "Primo avvio rilevato.\n\n"
+            "Verra' creato un ambiente virtuale Python e installate\n"
+            "tutte le dipendenze (PySide6, Playwright, ecc.).\n\n"
+            "Questa operazione richiede 2-5 minuti ed avviene una\n"
+            "sola volta. Al termine l'applicazione si avviera'\n"
+            "automaticamente.\n\n"
+            "Non chiudere questa finestra.",
+            title="Installazione in corso",
+            kind="info",
+        )
+
+        try:
+            subprocess.run(
+                [sys_py] + extra_args + ["-m", "venv", _VENV_DIR],
+                timeout=120,
+                check=True,
+            )
+        except Exception as e:
+            _msg_box(
+                "Impossibile creare l'ambiente virtuale.\n\n"
+                f"Dettagli: {e}",
+                title="Errore installazione",
+                kind="error",
+            )
+            return None
+
+    # 3) Ensure pip is up to date inside the venv
+    if not _ensure_pip(_VENV_PY):
+        _msg_box(
+            "pip non disponibile nel virtualenv.\n"
+            "Riprova ad eseguire launch_silently.pyw.",
+            title="Errore installazione",
+            kind="error",
+        )
+        return None
+
+    try:
+        subprocess.run(
+            [_VENV_PY, "-m", "pip", "install", "--upgrade", "pip"],
+            timeout=120,
+        )
+    except Exception:
+        pass  # non-fatal
+
+    # 4) Install requirements.txt
+    if not os.path.exists(_REQUIREMENTS):
+        _msg_box(
+            "File requirements.txt non trovato.\n"
+            "Reinstalla il software.",
+            title="Errore installazione",
+            kind="error",
+        )
+        return None
+
+    try:
+        _run_streamed(
+            [_VENV_PY, "-m", "pip", "install", "-r", _REQUIREMENTS]
+        )
+    except Exception as e:
+        _msg_box(
+            "Errore durante l'installazione delle dipendenze Python.\n\n"
+            f"Dettagli: {e}\n\n"
+            "Verifica la connessione internet e riprova.",
+            title="Errore installazione",
+            kind="error",
+        )
+        return None
+
+    # 5) Install Playwright Chromium browser (for Amazon Music import).
+    #    This is a ~150 MB download; we treat failures as non-fatal so that
+    #    YouTube/Spotify imports still work without it.
+    try:
+        subprocess.run(
+            [_VENV_PY, "-m", "playwright", "install", "chromium"],
+            timeout=600,  # up to 10 minutes
+        )
+    except Exception:
+        # Non-fatal — the user can still use YouTube/Spotify.
+        pass
+
+    # 6) Write marker so we skip bootstrap next time
+    try:
+        with open(_BOOTSTRAP_MARKER, "w", encoding="utf-8") as f:
+            json.dump({
+                "python": sys.version,
+                "created_at": time.time(),
+            }, f)
+    except Exception:
+        pass
+
+    return _VENV_PY
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+def main():
+    # Fast path: virtualenv already exists and bootstrap completed.
+    if os.path.exists(_BOOTSTRAP_MARKER) and os.path.exists(_VENV_PY):
+        # Sanity-check that the venv actually has PySide6 (marker could be stale
+        # if the user manually deleted venv\Lib\site-packages\PySide6).
+        try:
+            check = subprocess.run(
+                [_VENV_PY, "-c", "import PySide6, rapidfuzz, mutagen"],
+                capture_output=True, timeout=15,
+            )
+            venv_ready = (check.returncode == 0)
+        except Exception:
+            venv_ready = False
+
+        if venv_ready:
+            # Relaunch the app with the venv Python so all dependencies are found.
+            os.execv(_VENV_PY, [_VENV_PY, os.path.join(_PROJECT_ROOT, "main.py")])
+            return  # not reached
+        # else: marker is stale, fall through to full bootstrap
+
+    venv_py = _bootstrap()
+    if not venv_py:
+        sys.exit(1)
+
+    # Relaunch main.py with the venv Python.
+    # We use os.execv so the child replaces this process — clean exit when
+    # the user closes the app, no leftover pythonw.exe.
+    os.execv(venv_py, [venv_py, os.path.join(_PROJECT_ROOT, "main.py")])
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as e:
+        # Last-resort error dialog
+        import traceback
+        tb = traceback.format_exc()
+        _msg_box(
+            "Errore imprevisto durante l'avvio.\n\n"
+            f"{e}\n\n"
+            f"Traceback:\n{tb[:1500]}",
+            title="Errore critico",
+            kind="error",
+        )
+        sys.exit(1)
