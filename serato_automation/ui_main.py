@@ -2771,7 +2771,10 @@ class ImportUrlDialog(QDialog):
         if not url:
             QMessageBox.warning(self, tr("title_attention"), tr("msg_enter_url"))
             return
-        if not any(x in url for x in ("youtube.com", "youtu.be", "spotify.com")):
+        if not any(
+            x in url for x in
+            ("youtube.com", "youtu.be", "spotify.com", "music.amazon.")
+        ) and not ("amazon." in url and "/music/" in url):
             QMessageBox.warning(self, tr("title_attention"), tr("msg_unsupported_url"))
             return
 

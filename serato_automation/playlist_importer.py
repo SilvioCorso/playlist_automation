@@ -1,5 +1,9 @@
 # Serato Playlist Automation
-# Playlist importer module - imports tracks from YouTube/Spotify URLs
+# Playlist importer module - imports tracks from YouTube/Spotify/Amazon Music URLs
+# v1.9.4:
+#   - Amazon Music: support for user-playlists, playlists, albums, tracks URLs
+#     (Amazon Music is a JS SPA, so we use Playwright to render the page and
+#     read track attributes from the virtualized <music-image-row> elements)
 # v1.9.3:
 #   - YouTube: HTML page is now primary (RSS returns only ~15 newest items)
 #   - YouTube: parse lockupViewModel (current UI) + playlistVideoRenderer (legacy)
@@ -26,19 +30,23 @@ logger = logging.getLogger('serato.importer')
 
 
 def import_playlist_from_url(url: str) -> Tuple[str, List[str]]:
-    """Import playlist tracks from a YouTube or Spotify URL."""
+    """Import playlist tracks from a YouTube, Spotify, or Amazon Music URL."""
     url = url.strip()
 
     if 'youtube.com' in url or 'youtu.be' in url:
         return ('YouTube', _import_youtube(url))
     elif 'spotify.com' in url:
         return ('Spotify', _import_spotify(url))
+    elif 'music.amazon.' in url or ('amazon.' in url and '/music/' in url):
+        return ('Amazon Music', _import_amazon_music(url))
     else:
         raise ValueError(
             "URL non supportata.\n\n"
             "Formati supportati:\n"
             "- YouTube: https://www.youtube.com/playlist?list=...\n"
-            "- Spotify: https://open.spotify.com/playlist/..."
+            "- Spotify: https://open.spotify.com/playlist/...\n"
+            "- Amazon Music: https://music.amazon.it/user-playlists/... "
+            "oppure /playlists/... o /albums/..."
         )
 
 
@@ -717,3 +725,267 @@ def _extract_spotify_tracks_recursive(data, depth=0) -> List[str]:
             tracks.extend(_extract_spotify_tracks_recursive(item, depth + 1))
 
     return tracks
+
+
+# ------------------------------------------------------------------
+# Amazon Music import
+# ------------------------------------------------------------------
+#
+# Amazon Music web (music.amazon.it / music.amazon.com / ...) is a fully
+# client-side SPA. The HTML returned by urllib is just a ~11 KB shell with
+# a JS bundle reference. The actual playlist contents are loaded
+# dynamically by the JS app via XHR calls to
+# `https://<region>.web.skill.music.a2z.com/api/showHome` (and friends)
+# and then rendered into a virtualized list of <music-image-row> custom
+# elements (Web Components with Shadow DOM).
+#
+# Crucially:
+#   - The initial `showHome` JSON response carries the song *title*
+#     (`primaryText`) and the album name, but NOT the artist.
+#   - The artist name appears only as an attribute `secondary-text-1` on
+#     the <music-image-row> element, and only AFTER the row has been
+#     scrolled into view (the list is virtualized, so off-screen rows
+#     are placeholders without data attributes).
+#
+# Therefore we MUST render the page with a headless browser, scroll
+# through it progressively, and capture each `music-image-row[data-key]`
+# element's attributes. Playwright is the only reliable way to do this.
+
+_AMAZON_BROWSERS = ('chromium', 'firefox', 'webkit')
+
+
+def _import_amazon_music(url: str) -> List[str]:
+    """Extract tracks from an Amazon Music URL using a headless browser.
+
+    Supports:
+      - user-playlists/<id>
+      - playlists/<id>
+      - albums/<asin>
+      - tracks/<asin>
+      - artists/<asin>/<slug>
+
+    Returns a list of ``"artist - title"`` strings (or just ``"title"``
+    when the artist is not available).
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        raise ValueError(
+            "Per importare da Amazon Music è necessario Playwright.\n\n"
+            "Installa le dipendenze con:\n"
+            "    pip install playwright\n"
+            "    playwright install chromium\n\n"
+            "Amazon Music è una web app a caricamento JavaScript, quindi "
+            "non può essere letta con urllib come YouTube o Spotify."
+        )
+
+    logger.info("Amazon Music URL: %s", url)
+
+    tracks = []
+    with sync_playwright() as p:
+        browser = None
+        try:
+            browser = p.chromium.launch(headless=True)
+        except Exception as e:
+            # Common cause: Chromium binary not installed via
+            # `playwright install chromium`
+            raise ValueError(
+                "Impossibile avviare il browser headless di Playwright.\n\n"
+                "Esegui una volta:\n"
+                "    playwright install chromium\n\n"
+                f"Dettaglio errore: {e}"
+            )
+
+        try:
+            context = browser.new_context(
+                user_agent=(
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                    'AppleWebKit/537.36 (KHTML, like Gecko) '
+                    'Chrome/120.0.0.0 Safari/537.36'
+                ),
+                viewport={'width': 1280, 'height': 900},
+                locale='it-IT',
+            )
+            page = context.new_page()
+
+            try:
+                page.goto(url, wait_until='networkidle', timeout=60000)
+            except Exception as e:
+                logger.warning("Amazon Music goto warning: %s", e)
+
+            # Give the SPA time to bootstrap and make its initial API calls.
+            page.wait_for_timeout(5000)
+
+            # Progressive scroll: the <music-image-row> list is virtualized,
+            # so only rows that have been scrolled into view have the
+            # `data-key`, `primary-text`, `secondary-text-1` attributes
+            # we need. We scroll the window AND any internal scrollable
+            # containers, capturing unique rows as they appear.
+            all_tracks = {}
+            no_progress = 0
+            prev_count = 0
+
+            for i in range(120):
+                rows = page.evaluate(
+                    """() => {
+                        const out = [];
+                        const rows = document.querySelectorAll('music-image-row[data-key]');
+                        for (const r of rows) {
+                            out.push({
+                                dk: r.getAttribute('data-key'),
+                                primary: r.getAttribute('primary-text'),
+                                secondary1: r.getAttribute('secondary-text-1'),
+                                secondary2: r.getAttribute('secondary-text-2'),
+                            });
+                        }
+                        return out;
+                    }"""
+                )
+                for r in rows:
+                    if r.get('dk') and r['dk'] not in all_tracks:
+                        all_tracks[r['dk']] = r
+
+                # Scroll the window
+                page.evaluate("window.scrollBy(0, 1500)")
+                # Also scroll any internal scrollable containers
+                page.evaluate(
+                    """() => {
+                        const all = document.querySelectorAll('*');
+                        for (const el of all) {
+                            const s = getComputedStyle(el);
+                            if ((s.overflowY === 'auto' || s.overflowY === 'scroll')
+                                && el.scrollHeight > el.clientHeight + 100) {
+                                el.scrollTop += 1500;
+                            }
+                        }
+                    }"""
+                )
+                page.wait_for_timeout(500)
+
+                if len(all_tracks) == prev_count:
+                    no_progress += 1
+                    if no_progress >= 10:
+                        break
+                else:
+                    no_progress = 0
+                prev_count = len(all_tracks)
+
+            # Final capture after the last scroll
+            rows = page.evaluate(
+                """() => {
+                    const out = [];
+                    const rows = document.querySelectorAll('music-image-row[data-key]');
+                    for (const r of rows) {
+                        out.push({
+                            dk: r.getAttribute('data-key'),
+                            primary: r.getAttribute('primary-text'),
+                            secondary1: r.getAttribute('secondary-text-1'),
+                        });
+                    }
+                    return out;
+                }"""
+            )
+            for r in rows:
+                if r.get('dk') and r['dk'] not in all_tracks:
+                    all_tracks[r['dk']] = r
+
+            logger.info("Amazon Music: acquisite %d righe uniche", len(all_tracks))
+
+            # Preserve discovery order (the dict is insertion-ordered, which
+            # matches the order in which rows became visible during scrolling —
+            # but we want playlist order, so we sort by the numeric part of
+            # `data-key` if present, otherwise by insertion order).
+            #
+            # The `data-key` attribute looks like: "<Title><Artist><Album><Index>"
+            # where <Index> is the 1-based position in the playlist. We can't
+            # reliably parse it because title/artist aren't delimited. Instead,
+            # we re-fetch the rows in DOM order, which is the playlist order
+            # once everything has been rendered.
+            #
+            # However: due to virtualization, not all rows are in the DOM at
+            # once. We rely on the captured dict; for typical playlists (≤200
+            # tracks) the iteration above captures every row at least once.
+            #
+            # To preserve order, we re-scroll to top and scroll down once more,
+            # this time recording the order in which we first see each data-key.
+            page.evaluate("window.scrollTo(0, 0)")
+            page.wait_for_timeout(800)
+
+            ordered_keys = []
+            seen = set()
+            no_progress = 0
+            prev_seen = 0
+            for i in range(120):
+                rows = page.evaluate(
+                    """() => {
+                        const out = [];
+                        const rows = document.querySelectorAll('music-image-row[data-key]');
+                        for (const r of rows) {
+                            out.push(r.getAttribute('data-key'));
+                        }
+                        return out;
+                    }"""
+                )
+                for dk in rows:
+                    if dk and dk not in seen:
+                        seen.add(dk)
+                        ordered_keys.append(dk)
+
+                page.evaluate("window.scrollBy(0, 1500)")
+                page.evaluate(
+                    """() => {
+                        const all = document.querySelectorAll('*');
+                        for (const el of all) {
+                            const s = getComputedStyle(el);
+                            if ((s.overflowY === 'auto' || s.overflowY === 'scroll')
+                                && el.scrollHeight > el.clientHeight + 100) {
+                                el.scrollTop += 1500;
+                            }
+                        }
+                    }"""
+                )
+                page.wait_for_timeout(500)
+
+                if len(seen) == prev_seen:
+                    no_progress += 1
+                    if no_progress >= 10:
+                        break
+                else:
+                    no_progress = 0
+                prev_seen = len(seen)
+
+            # Fallback: if the ordered pass didn't capture all keys (rare),
+            # append the missing ones at the end in arbitrary order.
+            for dk in all_tracks.keys():
+                if dk not in seen:
+                    ordered_keys.append(dk)
+
+            # Build the final list in playlist order
+            for dk in ordered_keys:
+                r = all_tracks.get(dk)
+                if not r:
+                    continue
+                primary = (r.get('primary') or '').strip()
+                artist = (r.get('secondary1') or '').strip()
+                if not primary:
+                    continue
+                if artist:
+                    tracks.append(f"{artist} - {primary}")
+                else:
+                    tracks.append(primary)
+        finally:
+            browser.close()
+
+    if not tracks:
+        raise ValueError(
+            "Nessun brano trovato nella pagina Amazon Music.\n\n"
+            "Possibili cause:\n"
+            "- Playlist privata (deve essere pubblica)\n"
+            "- URL non valido\n"
+            "- La playlist è vuota\n"
+            "- Problema di connessione o regione non supportata"
+        )
+
+    logger.info("Amazon Music: trovati %d brani", len(tracks))
+    return tracks
+
