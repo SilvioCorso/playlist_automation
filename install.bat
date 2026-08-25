@@ -61,6 +61,21 @@ if errorlevel 1 (
     exit /b 1
 )
 
+:: Install Playwright Chromium (needed for Amazon Music URL import)
+echo [4/4] Download del browser headless per Amazon Music...
+playwright install chromium
+if errorlevel 1 (
+    echo [AVVISO] Installazione di Playwright Chromium non riuscita.
+    echo L'import da YouTube e Spotify continuera a funzionare.
+    echo Per abilitare Amazon Music, esegui manualmente:
+    echo   venv\Scripts\activate
+    echo   playwright install chromium
+    echo.
+) else (
+    echo [OK] Browser headless installato.
+)
+echo.
+
 echo ======================================
 echo   Installazione completata!
 echo ======================================
