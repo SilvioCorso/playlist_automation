@@ -1,5 +1,13 @@
 # Serato Playlist Automation
 # Crate writer module - creates Serato .crate files
+# v2.2: Volume-label based drive detection
+#   - When an external HDD is plugged into a different USB port, Windows
+#     assigns a different drive letter (e.g. E: -> F:). The previous code
+#     would show "DISCO SBAGLIATO" because the saved config paths no longer
+#     matched. We now use the Windows volume label (e.g. "DJ MUSIC") as a
+#     stable identifier — when the saved path's drive letter doesn't exist
+#     anymore, we scan all drives and find the one with the same volume
+#     label, then rewrite the path with the new drive letter.
 # v2.1: Fixed critical drive mismatch bug
 #   - Crate MUST be created in _Serato_/Subcrates on the SAME DRIVE as music files
 #   - If crate is on C: but music is on E:, Serato resolves relative paths to C: → "track not found"
@@ -14,14 +22,181 @@
 
 import os
 import re
+import sys
 import struct
 import logging
+import string
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from .track_matcher import MatchResult
 
 logger = logging.getLogger('serato.crate')
+
+
+# ---------------------------------------------------------------------------
+# Volume label / drive identification (Windows)
+# ---------------------------------------------------------------------------
+#
+# The fundamental problem we're solving here:
+#   - User saves config.json with music_folder="E:/DJ Music" and
+#     serato_folder="E:/_Serato_/Subcrates"
+#   - Next day they plug the external HDD into a different USB port
+#   - Windows assigns F: as the drive letter (E: is no longer present)
+#   - The app reads the saved paths, sees E: doesn't exist, and the
+#     "Match with Library" button is disabled because os.path.isdir()
+#     returns False for E:/DJ Music
+#
+# Solution: identify the drive by its VOLUME LABEL (the user-editable
+# name like "DJ MUSIC" or "MyExternal"). This label is stored on the
+# partition itself and follows the drive regardless of which USB port
+# or drive letter Windows assigns.
+#
+# Note: We could also use the volume serial number, but it's less
+# user-friendly (a 32-bit hex) and is sometimes 0 on FAT32 drives with
+# no serial. The volume label is more practical for the common case.
+
+def _get_volume_info(drive_or_path: str) -> Optional[Tuple[str, str]]:
+    """Return (volume_label, serial_hex) for a Windows drive or path.
+
+    Returns None on non-Windows platforms or if the drive can't be queried.
+    """
+    if not sys.platform.startswith('win'):
+        return None
+    if not drive_or_path:
+        return None
+    try:
+        import ctypes
+    except ImportError:
+        return None
+
+    # Normalize to a drive root path like "F:\\" — GetVolumeInformationW
+    # accepts any path on the target drive, but the root is most reliable.
+    drive_letter = get_drive_letter(drive_or_path)
+    if not drive_letter:
+        return None
+    root = f"{drive_letter}:\\"
+    if not os.path.exists(root):
+        return None
+
+    try:
+        kernel32 = ctypes.windll.kernel32
+        volume_name_buf = ctypes.create_unicode_buffer(1024)
+        fs_name_buf = ctypes.create_unicode_buffer(1024)
+        serial = ctypes.c_uint32(0)
+        max_len = ctypes.c_uint32(0)
+        flags = ctypes.c_uint32(0)
+
+        ok = kernel32.GetVolumeInformationW(
+            ctypes.c_wchar_p(root),
+            volume_name_buf,
+            ctypes.sizeof(volume_name_buf),
+            ctypes.byref(serial),
+            ctypes.byref(max_len),
+            ctypes.byref(flags),
+            fs_name_buf,
+            ctypes.sizeof(fs_name_buf),
+        )
+        if not ok:
+            return None
+        label = volume_name_buf.value or ""
+        serial_hex = f"{serial.value:08X}"
+        return (label, serial_hex)
+    except Exception as e:
+        logger.debug("GetVolumeInformationW failed for %s: %s", root, e)
+        return None
+
+
+def get_volume_label(drive_or_path: str) -> str:
+    """Return the volume label of the drive containing the given path.
+
+    Returns empty string if not on Windows or if the drive can't be queried.
+    """
+    info = _get_volume_info(drive_or_path)
+    return info[0] if info else ""
+
+
+def find_drive_by_volume_label(label: str) -> Optional[str]:
+    """Scan all available drives and return the drive letter whose volume
+    label matches the given label (case-insensitive).
+
+    Returns None if no match, or on non-Windows platforms.
+    """
+    if not sys.platform.startswith('win'):
+        return None
+    if not label:
+        return None
+
+    label_norm = (label or "").strip().lower()
+    if not label_norm:
+        return None
+
+    for letter in string.ascii_uppercase:
+        root = f"{letter}:\\"
+        if not os.path.exists(root):
+            continue
+        info = _get_volume_info(letter + ":")
+        if not info:
+            continue
+        vol_label = info[0]
+        if vol_label and vol_label.strip().lower() == label_norm:
+            logger.info(
+                "Volume label '%s' matched drive %s: (serial %s)",
+                label, letter, info[1]
+            )
+            return letter
+    return None
+
+
+def remap_path_to_current_drive(saved_path: str, saved_volume_label: str) -> Optional[str]:
+    """If `saved_path` no longer exists (drive letter changed), try to find
+    a drive with the same volume label and return the path with the new
+    drive letter.
+
+    Returns:
+      - The remapped path (str) if a matching drive was found
+      - The original path (str) if it still exists (no remap needed)
+      - None if the path doesn't exist AND no matching drive was found
+    """
+    if not saved_path:
+        return None
+    # Fast path: the saved path still works (drive letter unchanged)
+    if os.path.exists(saved_path):
+        return saved_path
+    # Saved path doesn't exist — try to remap by volume label
+    if not saved_volume_label:
+        return None
+    new_letter = find_drive_by_volume_label(saved_volume_label)
+    if not new_letter:
+        return None
+    # Reconstruct the path with the new drive letter
+    # Preserve everything after the drive letter
+    saved_letter = get_drive_letter(saved_path)
+    if not saved_letter:
+        return None
+    # Replace "<old>:" with "<new>:" at the start of the path
+    suffix = saved_path[len(saved_letter) + 1:]  # skip "X:"
+    # Handle both "X:/foo" and "X:\\foo"
+    if suffix.startswith(":"):
+        suffix = suffix[1:]
+    new_path = f"{new_letter}:{suffix}"
+    if os.path.exists(new_path):
+        logger.info(
+            "Remapped path by volume label: '%s' -> '%s' (label=%r)",
+            saved_path, new_path, saved_volume_label
+        )
+        return new_path
+    # Even with the right drive, the sub-path changed — give up
+    logger.warning(
+        "Volume label matched drive %s: but path '%s' still doesn't exist",
+        new_letter, new_path
+    )
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Drive letter helpers (legacy, kept for backward compat)
+# ---------------------------------------------------------------------------
 
 
 @dataclass

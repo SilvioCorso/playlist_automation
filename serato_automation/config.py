@@ -8,7 +8,12 @@ from pathlib import Path
 
 DEFAULT_CONFIG = {
     "music_folder": "",
+    "music_folder_volume_label": "",   # Windows volume label of the drive hosting
+                                       # music_folder, used to auto-remap when the
+                                       # external HDD is plugged into a different USB
+                                       # port and gets assigned a new drive letter.
     "serato_folder": "",
+    "serato_folder_volume_label": "", # Same idea for the Serato folder
     "output_folder": "",
     "match_thresholds": {
         "exact": 100,
@@ -46,7 +51,10 @@ DEFAULT_CONFIG = {
 # Default paths for Windows
 if sys.platform == 'win32' or sys.platform == 'cygwin':
     _user_home = os.path.expanduser("~")
-    DEFAULT_CONFIG["music_folder"] = "E:/"
+    # NOTE: music_folder intentionally left empty — a hard-coded "E:/" default
+    # would create a poor first-run experience for users without an E: drive.
+    # The user must select their music folder via the Browse button on first run.
+    DEFAULT_CONFIG["music_folder"] = ""
     # Output folder defaults to Desktop
     DEFAULT_CONFIG["output_folder"] = os.path.join(_user_home, "Desktop")
 

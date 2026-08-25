@@ -145,7 +145,10 @@ from .library_reader import LibraryReader, normalize_string
 from .track_matcher import (
     TrackMatcher, MatchResult, MatchConfidence, CandidateMatch, compute_word_colors,
 )
-from .crate_writer import CrateWriter, find_serato_subcrates, validate_crate_drive, get_drive_letter
+from .crate_writer import (
+    CrateWriter, find_serato_subcrates, validate_crate_drive, get_drive_letter,
+    get_volume_label, remap_path_to_current_drive,
+)
 from . import serato_database
 from . import branding
 from . import ui_theme
@@ -4433,7 +4436,99 @@ class MainWindow(QMainWindow):
             self.serato_label.setText(tr("serato_not_detected_full"))
             self.serato_label.setStyleSheet(base + f" color: {p['danger']};")
 
+    def _resolve_paths_by_volume_label(self):
+        """Auto-remap saved paths when the external HDD drive letter changed.
+
+        Called early in startup. If the saved music_folder or serato_folder
+        no longer exist (because the user plugged the external HDD into a
+        different USB port and Windows assigned a different drive letter),
+        try to find a drive with the same Windows volume label and update
+        both the config and the in-memory state.
+
+        Returns True if at least one path was remapped.
+        """
+        remapped_any = False
+
+        # --- Music folder ---
+        saved_music = self.config.get("music_folder", "")
+        saved_music_label = self.config.get("music_folder_volume_label", "")
+        if saved_music and not os.path.isdir(saved_music) and saved_music_label:
+            new_music = remap_path_to_current_drive(saved_music, saved_music_label)
+            if new_music and new_music != saved_music:
+                old_letter = get_drive_letter(saved_music)
+                new_letter = get_drive_letter(new_music)
+                self._logger.info(
+                    "Music folder auto-remapped by volume label '%s': '%s' -> '%s'",
+                    saved_music_label, saved_music, new_music
+                )
+                # Migrate the library cache file from the old path hash
+                # to the new one, so the user doesn't have to re-scan
+                # a 6000-track library just because they plugged the HDD
+                # into a different USB port.
+                try:
+                    old_cache = self._get_cache_path(saved_music)
+                    new_cache = self._get_cache_path(new_music)
+                    if os.path.exists(old_cache) and not os.path.exists(new_cache):
+                        import shutil
+                        shutil.move(old_cache, new_cache)
+                        self._logger.info(
+                            "Library cache migrated: %s -> %s",
+                            os.path.basename(old_cache),
+                            os.path.basename(new_cache),
+                        )
+                except Exception as e:
+                    self._logger.warning("Cache migration failed (non-fatal): %s", e)
+
+                self.config["music_folder"] = new_music
+                self.music_folder_input.setText(new_music)
+                self.statusBar().showMessage(
+                    f"Disco esterno rilevato su {new_letter}: (era {old_letter}:)"
+                )
+                save_config(self.config)
+                remapped_any = True
+
+        # --- Serato folder ---
+        saved_serato = self.config.get("serato_folder", "")
+        saved_serato_label = self.config.get("serato_folder_volume_label", "")
+        if saved_serato and not os.path.isdir(saved_serato) and saved_serato_label:
+            new_serato = remap_path_to_current_drive(saved_serato, saved_serato_label)
+            if new_serato and new_serato != saved_serato:
+                self._logger.info(
+                    "Serato folder auto-remapped by volume label '%s': '%s' -> '%s'",
+                    saved_serato_label, saved_serato, new_serato
+                )
+                self.config["serato_folder"] = new_serato
+                self.serato_subcrates = new_serato
+                save_config(self.config)
+                remapped_any = True
+
+        # Also handle the case where music_folder was remapped but serato_folder
+        # was set to the OLD music drive — in that case, re-derive serato subcrates
+        # from the NEW music folder. This handles the common case where the user
+        # had both on the same external HDD and never set serato_folder explicitly.
+        if saved_music and not saved_serato:
+            new_music_now = self.config.get("music_folder", "")
+            if new_music_now and new_music_now != saved_music:
+                # The music folder was just remapped — re-detect Serato
+                detected = find_serato_subcrates(new_music_now)
+                if detected:
+                    self._logger.info(
+                        "Serato folder re-detected on new music drive: %s",
+                        detected
+                    )
+                    self.serato_subcrates = detected
+                    self.config["serato_folder"] = detected
+                    self.config["serato_folder_volume_label"] = get_volume_label(detected)
+                    save_config(self.config)
+                    remapped_any = True
+
+        return remapped_any
+
     def _check_serato(self):
+        # First, try to auto-remap paths if drive letters have changed
+        # (external HDD plugged into a different USB port).
+        self._resolve_paths_by_volume_label()
+
         self.serato_subcrates = find_serato_subcrates(
             self.config.get("music_folder", "")
         )
@@ -4444,13 +4539,22 @@ class MainWindow(QMainWindow):
         self._update_serato_label()
 
     def _browse_serato_folder(self):
+        # Default the file dialog to the current music folder's drive, so
+        # the user lands on the right external HDD when picking the Serato
+        # subcrates folder.
+        start_dir = self.music_folder_input.text().strip() or ""
+        if not start_dir or not os.path.isdir(start_dir):
+            start_dir = os.path.expanduser("~")
         folder = QFileDialog.getExistingDirectory(
-            self, tr("dlg_select_serato"), "",
+            self, tr("dlg_select_serato"), start_dir,
             QFileDialog.Option.ShowDirsOnly,
         )
         if folder:
             self.serato_subcrates = folder
             self.config["serato_folder"] = folder
+            # Save the volume label so we can auto-remap on next launch
+            # if the drive letter changes.
+            self.config["serato_folder_volume_label"] = get_volume_label(folder)
             save_config(self.config)
             self._update_serato_label()
 
@@ -4459,17 +4563,43 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _browse_music_folder(self):
+        # Start the file dialog on the current music folder (or home if empty)
+        # so the user can re-pick the same drive after a USB port change.
+        start_dir = self.music_folder_input.text().strip() or ""
+        if not start_dir or not os.path.isdir(start_dir):
+            start_dir = os.path.expanduser("~")
         folder = QFileDialog.getExistingDirectory(
-            self, tr("dlg_select_music"),
-            self.music_folder_input.text() or os.path.expanduser("~"),
+            self, tr("dlg_select_music"), start_dir,
         )
         if folder:
             self.music_folder_input.setText(folder)
             self.config["music_folder"] = folder
+            # Save the volume label of the drive hosting this folder.
+            # On Windows, this lets us auto-remap the path on next launch
+            # if the external HDD is plugged into a different USB port and
+            # gets assigned a new drive letter.
+            self.config["music_folder_volume_label"] = get_volume_label(folder)
+            # If the music folder is on a different drive than the saved
+            # serato_folder, reset serato_folder so it gets re-detected
+            # on the new music drive (otherwise we'd keep showing the
+            # "WRONG DRIVE" warning).
+            saved_serato = self.config.get("serato_folder", "")
+            if saved_serato:
+                serato_drive = get_drive_letter(saved_serato)
+                music_drive = get_drive_letter(folder)
+                if serato_drive and music_drive and serato_drive != music_drive:
+                    self._logger.info(
+                        "Music folder changed drive (%s -> %s); resetting serato_folder",
+                        serato_drive, music_drive
+                    )
+                    self.config["serato_folder"] = ""
+                    self.config["serato_folder_volume_label"] = ""
             save_config(self.config)
             self.statusBar().showMessage(tr("status_folder", folder=folder))
             self._library_cache_loaded = False
             self._update_scan_button_text()
+            # Re-detect Serato subcrates on the new music drive
+            self._check_serato()
 
     def _get_cache_path(self, folder: str) -> str:
         folder_hash = hashlib.md5(folder.encode("utf-8")).hexdigest()[:12]
