@@ -47,17 +47,25 @@ logger = logging.getLogger('serato.crate')
 #     "Match with Library" button is disabled because os.path.isdir()
 #     returns False for E:/DJ Music
 #
-# Solution: identify the drive by its VOLUME LABEL (the user-editable
-# name like "DJ MUSIC" or "MyExternal"). This label is stored on the
-# partition itself and follows the drive regardless of which USB port
-# or drive letter Windows assigns.
+# Solution: identify the drive by its VOLUME SERIAL NUMBER — a 32-bit
+# hexadecimal ID that Windows assigns to EVERY formatted partition,
+# regardless of whether the user has set a custom volume label.
+# The serial number is:
+#   - Always present (even on disks without a label)
+#   - Stable across reboots and USB port changes
+#   - Unique per partition with very high probability
+#   - Re-rolled only when the user reformats the partition
 #
-# Note: We could also use the volume serial number, but it's less
-# user-friendly (a 32-bit hex) and is sometimes 0 on FAT32 drives with
-# no serial. The volume label is more practical for the common case.
+# As an additional fallback we also support matching by volume label,
+# but the serial number is the primary identifier because it works
+# even when the user has not personalized the disk name.
 
 def _get_volume_info(drive_or_path: str) -> Optional[Tuple[str, str]]:
     """Return (volume_label, serial_hex) for a Windows drive or path.
+
+    The serial_hex is always returned when possible, even if the volume
+    label is empty (the user didn't name the disk). This is the key
+    improvement that lets us auto-remap paths on disks WITHOUT a label.
 
     Returns None on non-Windows platforms or if the drive can't be queried.
     """
@@ -100,6 +108,9 @@ def _get_volume_info(drive_or_path: str) -> Optional[Tuple[str, str]]:
         if not ok:
             return None
         label = volume_name_buf.value or ""
+        # Always format the serial as 8-digit uppercase hex, even if 0
+        # (a serial of 0 is rare but possible on some FAT32 partitions,
+        # and we still want to identify the disk somehow)
         serial_hex = f"{serial.value:08X}"
         return (label, serial_hex)
     except Exception as e:
@@ -110,10 +121,47 @@ def _get_volume_info(drive_or_path: str) -> Optional[Tuple[str, str]]:
 def get_volume_label(drive_or_path: str) -> str:
     """Return the volume label of the drive containing the given path.
 
-    Returns empty string if not on Windows or if the drive can't be queried.
+    Returns empty string if not on Windows, if the drive can't be queried,
+    or if the disk has no label set by the user.
     """
     info = _get_volume_info(drive_or_path)
     return info[0] if info else ""
+
+
+def get_volume_serial(drive_or_path: str) -> str:
+    """Return the volume serial number (8-char hex) of the drive containing
+    the given path.
+
+    Returns empty string if not on Windows or if the drive can't be queried.
+    The serial is always present on a formatted Windows partition, so this
+    is the most reliable way to identify a disk across USB port changes.
+    """
+    info = _get_volume_info(drive_or_path)
+    return info[1] if info else ""
+
+
+def get_volume_identifier(drive_or_path: str) -> str:
+    """Return a stable identifier for the drive hosting the given path.
+
+    Preference order:
+      1. Volume serial number (always present on formatted partitions)
+      2. Volume label (only if the user has set one)
+      3. Empty string (gave up — caller should fall back to manual selection)
+
+    The serial is preferred because it works even on disks that have no
+    user-set label. The label is kept as a secondary identifier for
+    backward-compat with configs saved before the serial-number support
+    was added.
+    """
+    info = _get_volume_info(drive_or_path)
+    if not info:
+        return ""
+    label, serial = info
+    if serial and serial != "00000000":
+        return f"serial:{serial}"
+    if label and label.strip():
+        return f"label:{label.strip()}"
+    return ""
 
 
 def find_drive_by_volume_label(label: str) -> Optional[str]:
@@ -121,6 +169,8 @@ def find_drive_by_volume_label(label: str) -> Optional[str]:
     label matches the given label (case-insensitive).
 
     Returns None if no match, or on non-Windows platforms.
+    Kept for backward compatibility — new code should use
+    find_drive_by_identifier() which checks serial first, then label.
     """
     if not sys.platform.startswith('win'):
         return None
@@ -148,10 +198,74 @@ def find_drive_by_volume_label(label: str) -> Optional[str]:
     return None
 
 
-def remap_path_to_current_drive(saved_path: str, saved_volume_label: str) -> Optional[str]:
+def find_drive_by_serial(serial_hex: str) -> Optional[str]:
+    """Scan all available drives and return the drive letter whose volume
+    serial number matches the given hex string (case-insensitive).
+
+    Returns None if no match, or on non-Windows platforms.
+    The serial is the most reliable identifier: it is always present on
+    a formatted partition (even without a label) and is stable across
+    reboots and USB port changes.
+    """
+    if not sys.platform.startswith('win'):
+        return None
+    if not serial_hex:
+        return None
+
+    serial_norm = serial_hex.strip().upper().lstrip("0") or "0"
+    # Also compare without leading zeros since "00000001" == "1"
+    # Some Windows versions pad with zeros, some don't.
+
+    for letter in string.ascii_uppercase:
+        root = f"{letter}:\\"
+        if not os.path.exists(root):
+            continue
+        info = _get_volume_info(letter + ":")
+        if not info:
+            continue
+        drive_serial = info[1]
+        drive_serial_norm = drive_serial.strip().upper().lstrip("0") or "0"
+        if drive_serial_norm == serial_norm:
+            logger.info(
+                "Volume serial %s matched drive %s: (label %r)",
+                serial_hex, letter, info[0]
+            )
+            return letter
+    return None
+
+
+def find_drive_by_identifier(identifier: str) -> Optional[str]:
+    """Find a drive by its identifier (as returned by get_volume_identifier).
+
+    Accepts identifiers in the form:
+      - "serial:ABCD1234" — match by volume serial number (preferred)
+      - "label:DJ MUSIC"  — match by volume label (fallback)
+      - "DJ MUSIC"        — bare label, treated as "label:..." for compat
+
+    Returns the matched drive letter, or None if no match.
+    """
+    if not identifier:
+        return None
+
+    ident = identifier.strip()
+    if ident.lower().startswith("serial:"):
+        serial = ident[len("serial:"):]
+        return find_drive_by_serial(serial)
+    if ident.lower().startswith("label:"):
+        label = ident[len("label:"):]
+        return find_drive_by_volume_label(label)
+    # Backward compat: bare label
+    return find_drive_by_volume_label(ident)
+
+
+def remap_path_to_current_drive(saved_path: str, saved_identifier: str) -> Optional[str]:
     """If `saved_path` no longer exists (drive letter changed), try to find
-    a drive with the same volume label and return the path with the new
-    drive letter.
+    a drive with the same volume identifier and return the path with the
+    new drive letter.
+
+    The identifier is what get_volume_identifier() returned when the path
+    was originally saved — typically "serial:ABCD1234" for new saves, or
+    "label:DJ MUSIC" / bare "DJ MUSIC" for old configs.
 
     Returns:
       - The remapped path (str) if a matching drive was found
@@ -163,10 +277,10 @@ def remap_path_to_current_drive(saved_path: str, saved_volume_label: str) -> Opt
     # Fast path: the saved path still works (drive letter unchanged)
     if os.path.exists(saved_path):
         return saved_path
-    # Saved path doesn't exist — try to remap by volume label
-    if not saved_volume_label:
+    # Saved path doesn't exist — try to remap by identifier
+    if not saved_identifier:
         return None
-    new_letter = find_drive_by_volume_label(saved_volume_label)
+    new_letter = find_drive_by_identifier(saved_identifier)
     if not new_letter:
         return None
     # Reconstruct the path with the new drive letter
@@ -182,14 +296,14 @@ def remap_path_to_current_drive(saved_path: str, saved_volume_label: str) -> Opt
     new_path = f"{new_letter}:{suffix}"
     if os.path.exists(new_path):
         logger.info(
-            "Remapped path by volume label: '%s' -> '%s' (label=%r)",
-            saved_path, new_path, saved_volume_label
+            "Remapped path by identifier %r: '%s' -> '%s'",
+            saved_identifier, saved_path, new_path
         )
         return new_path
     # Even with the right drive, the sub-path changed — give up
     logger.warning(
-        "Volume label matched drive %s: but path '%s' still doesn't exist",
-        new_letter, new_path
+        "Identifier %r matched drive %s: but path '%s' still doesn't exist",
+        saved_identifier, new_letter, new_path
     )
     return None
 

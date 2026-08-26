@@ -147,7 +147,8 @@ from .track_matcher import (
 )
 from .crate_writer import (
     CrateWriter, find_serato_subcrates, validate_crate_drive, get_drive_letter,
-    get_volume_label, remap_path_to_current_drive,
+    get_volume_label, get_volume_serial, get_volume_identifier,
+    remap_path_to_current_drive,
 )
 from . import serato_database
 from . import branding
@@ -2502,36 +2503,51 @@ class ResultsTable(QTableWidget):
 # ===================================================================
 
 class FormatGuideDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, theme: str = "light"):
         super().__init__(parent)
         self.setWindowTitle(tr("guide_title"))
         self.setMinimumSize(650, 620)
         self.resize(700, 650)
+
+        # Theme-aware colors so the dialog is readable in both light and dark mode.
+        # Previous version used hardcoded gray (#7f8c8d) on white (#fafafa) which
+        # was nearly invisible, especially in dark theme where the QTextEdit
+        # inherited light-on-dark text but kept the white background.
+        self._is_dark = (theme == "dark")
+        p = ui_theme.palette()
 
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
 
         title = QLabel(tr("guide_heading"))
         title.setFont(QFont("Segoe UI", 14, QFont.Weight.Bold))
-        title.setStyleSheet("color: #4927af;")
+        title.setStyleSheet(f"color: {p['accent']};")
         layout.addWidget(title)
 
         guide = QLabel(tr("guide_body_detailed"))
         guide.setWordWrap(True)
         guide.setTextFormat(Qt.TextFormat.RichText)
+        # Use theme-aware colors so the rich-text label is readable in both themes.
+        # The HTML in guide_body_detailed uses <b> and <code> tags whose colors
+        # are inherited from the QLabel stylesheet.
         guide.setStyleSheet(
-            "background: #f0ecfa; border: 1px solid #c8b8e8; "
-            "border-radius: 6px; padding: 12px; font-size: 11px;"
+            f"background: {p['panel_alt']}; border: 1px solid {p['border']}; "
+            f"border-radius: 6px; padding: 12px; font-size: 11px; "
+            f"color: {p['text']};"
         )
         layout.addWidget(guide)
 
         prompt_title = QLabel(tr("guide_prompt_title"))
         prompt_title.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
-        prompt_title.setStyleSheet("color: #2c3e50; margin-top: 6px;")
+        prompt_title.setStyleSheet(
+            f"color: {p['text']}; margin-top: 6px;"
+        )
         layout.addWidget(prompt_title)
 
         desc = QLabel(tr("guide_prompt_desc"))
-        desc.setStyleSheet("color: #7f8c8d; font-size: 10px;")
+        desc.setStyleSheet(
+            f"color: {p['text_muted']}; font-size: 10px;"
+        )
         desc.setWordWrap(True)
         layout.addWidget(desc)
 
@@ -2539,9 +2555,11 @@ class FormatGuideDialog(QDialog):
         self.prompt_edit.setPlainText(AI_CLEANUP_PROMPT)
         self.prompt_edit.setFont(QFont("Consolas", 9))
         self.prompt_edit.setReadOnly(True)
+        # Use theme-aware background and an explicit text color so the
+        # prompt is readable regardless of the app-wide stylesheet.
         self.prompt_edit.setStyleSheet(
-            "border: 1px solid #c8ced6; border-radius: 4px; padding: 8px; "
-            "background: #fafafa; font-size: 10px;"
+            f"border: 1px solid {p['border']}; border-radius: 4px; padding: 8px; "
+            f"background: {p['panel_alt']}; color: {p['text']}; font-size: 10px;"
         )
         layout.addWidget(self.prompt_edit, stretch=1)
 
@@ -4442,8 +4460,17 @@ class MainWindow(QMainWindow):
         Called early in startup. If the saved music_folder or serato_folder
         no longer exist (because the user plugged the external HDD into a
         different USB port and Windows assigned a different drive letter),
-        try to find a drive with the same Windows volume label and update
+        try to find a drive with the same volume identifier and update
         both the config and the in-memory state.
+
+        The volume identifier is preferred over the bare volume label
+        because the serial number is ALWAYS present on a formatted Windows
+        partition — even if the user has not set a custom volume label.
+        This means the auto-remap now works for disks that have no label.
+
+        Backward compatibility: if an old config has only the
+        `*_volume_label` field (no `*_volume_identifier`), we use the
+        label as the identifier. New saves always include the identifier.
 
         Returns True if at least one path was remapped.
         """
@@ -4451,15 +4478,21 @@ class MainWindow(QMainWindow):
 
         # --- Music folder ---
         saved_music = self.config.get("music_folder", "")
-        saved_music_label = self.config.get("music_folder_volume_label", "")
-        if saved_music and not os.path.isdir(saved_music) and saved_music_label:
-            new_music = remap_path_to_current_drive(saved_music, saved_music_label)
+        # Prefer the new *_volume_identifier (serial-based); fall back to
+        # the legacy *_volume_label for configs saved before this update.
+        saved_music_id = (
+            self.config.get("music_folder_volume_identifier") or
+            self.config.get("music_folder_volume_label") or
+            ""
+        )
+        if saved_music and not os.path.isdir(saved_music) and saved_music_id:
+            new_music = remap_path_to_current_drive(saved_music, saved_music_id)
             if new_music and new_music != saved_music:
                 old_letter = get_drive_letter(saved_music)
                 new_letter = get_drive_letter(new_music)
                 self._logger.info(
-                    "Music folder auto-remapped by volume label '%s': '%s' -> '%s'",
-                    saved_music_label, saved_music, new_music
+                    "Music folder auto-remapped by identifier %r: '%s' -> '%s'",
+                    saved_music_id, saved_music, new_music
                 )
                 # Migrate the library cache file from the old path hash
                 # to the new one, so the user doesn't have to re-scan
@@ -4480,6 +4513,11 @@ class MainWindow(QMainWindow):
                     self._logger.warning("Cache migration failed (non-fatal): %s", e)
 
                 self.config["music_folder"] = new_music
+                # Refresh the volume identifier with the new drive's value
+                # in case the serial changed (rare, but possible if the
+                # user replaced the disk with one that has the same label).
+                self.config["music_folder_volume_identifier"] = get_volume_identifier(new_music)
+                self.config["music_folder_volume_label"] = get_volume_label(new_music)
                 self.music_folder_input.setText(new_music)
                 self.statusBar().showMessage(
                     f"Disco esterno rilevato su {new_letter}: (era {old_letter}:)"
@@ -4489,15 +4527,21 @@ class MainWindow(QMainWindow):
 
         # --- Serato folder ---
         saved_serato = self.config.get("serato_folder", "")
-        saved_serato_label = self.config.get("serato_folder_volume_label", "")
-        if saved_serato and not os.path.isdir(saved_serato) and saved_serato_label:
-            new_serato = remap_path_to_current_drive(saved_serato, saved_serato_label)
+        saved_serato_id = (
+            self.config.get("serato_folder_volume_identifier") or
+            self.config.get("serato_folder_volume_label") or
+            ""
+        )
+        if saved_serato and not os.path.isdir(saved_serato) and saved_serato_id:
+            new_serato = remap_path_to_current_drive(saved_serato, saved_serato_id)
             if new_serato and new_serato != saved_serato:
                 self._logger.info(
-                    "Serato folder auto-remapped by volume label '%s': '%s' -> '%s'",
-                    saved_serato_label, saved_serato, new_serato
+                    "Serato folder auto-remapped by identifier %r: '%s' -> '%s'",
+                    saved_serato_id, saved_serato, new_serato
                 )
                 self.config["serato_folder"] = new_serato
+                self.config["serato_folder_volume_identifier"] = get_volume_identifier(new_serato)
+                self.config["serato_folder_volume_label"] = get_volume_label(new_serato)
                 self.serato_subcrates = new_serato
                 save_config(self.config)
                 remapped_any = True
@@ -4518,6 +4562,7 @@ class MainWindow(QMainWindow):
                     )
                     self.serato_subcrates = detected
                     self.config["serato_folder"] = detected
+                    self.config["serato_folder_volume_identifier"] = get_volume_identifier(detected)
                     self.config["serato_folder_volume_label"] = get_volume_label(detected)
                     save_config(self.config)
                     remapped_any = True
@@ -4552,8 +4597,10 @@ class MainWindow(QMainWindow):
         if folder:
             self.serato_subcrates = folder
             self.config["serato_folder"] = folder
-            # Save the volume label so we can auto-remap on next launch
-            # if the drive letter changes.
+            # Save BOTH the volume identifier (preferred — works even
+            # when the disk has no label) and the legacy volume_label
+            # (for backward compat with older builds that only read it).
+            self.config["serato_folder_volume_identifier"] = get_volume_identifier(folder)
             self.config["serato_folder_volume_label"] = get_volume_label(folder)
             save_config(self.config)
             self._update_serato_label()
@@ -4574,10 +4621,12 @@ class MainWindow(QMainWindow):
         if folder:
             self.music_folder_input.setText(folder)
             self.config["music_folder"] = folder
-            # Save the volume label of the drive hosting this folder.
-            # On Windows, this lets us auto-remap the path on next launch
-            # if the external HDD is plugged into a different USB port and
-            # gets assigned a new drive letter.
+            # Save BOTH the volume identifier (preferred — uses the volume
+            # serial number which is always present on a formatted partition,
+            # so it works even when the user has not set a custom volume label)
+            # and the legacy volume_label (for backward compat with configs
+            # saved by older builds that only read the label).
+            self.config["music_folder_volume_identifier"] = get_volume_identifier(folder)
             self.config["music_folder_volume_label"] = get_volume_label(folder)
             # If the music folder is on a different drive than the saved
             # serato_folder, reset serato_folder so it gets re-detected
@@ -4594,6 +4643,7 @@ class MainWindow(QMainWindow):
                     )
                     self.config["serato_folder"] = ""
                     self.config["serato_folder_volume_label"] = ""
+                    self.config["serato_folder_volume_identifier"] = ""
             save_config(self.config)
             self.statusBar().showMessage(tr("status_folder", folder=folder))
             self._library_cache_loaded = False
@@ -4769,7 +4819,7 @@ class MainWindow(QMainWindow):
             )
 
     def _show_format_guide(self):
-        FormatGuideDialog(self).exec()
+        FormatGuideDialog(self, theme=self._current_theme).exec()
 
     def _show_algorithm_doc(self):
         AlgorithmDialog(self, theme=self._current_theme).exec()

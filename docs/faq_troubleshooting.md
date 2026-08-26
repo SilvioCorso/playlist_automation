@@ -89,26 +89,26 @@ Causa frequente: **disco sbagliato**. Musica su `E:` ma crate scritta su `C:`. L
 ### "DISCO SBAGLIATO! Crate su F: ma musica su E:" — ho cambiato porta USB
 **Sintomo:** hai collegato il disco esterno in una porta USB diversa e ora Windows gli assegna una lettera diversa (es. `F:` invece di `E:`). L'app mostra il warning "DISCO SBAGLIATO".
 
-**Soluzione automatica (dalla v4.5 in poi):** L'app rileva automaticamente il cambio di drive tramite il **volume label** del disco (il nome personalizzato assegnato al disco, es. "DJ MUSIC"). Al primo avvio dopo il cambio di porta USB:
+**Soluzione automatica (dalla v4.5 in poi):** L'app rileva automaticamente il cambio di drive tramite il **numero di serie del volume** (volume serial number), un ID univoco a 32-bit che Windows assegna a **ogni partizione formattata**, anche se non ha un nome personalizzato. Al primo avvio dopo il cambio di porta USB:
 1. L'app legge la `config.json` e vede che il path salvato non esiste più
-2. Cerca tra tutti i drive montati quello con lo stesso volume label
+2. Cerca tra tutti i drive montati quello con lo stesso volume serial number
 3. Aggiorna automaticamente `music_folder` e `serato_folder` con la nuova lettera
 4. Migrà anche la cache della libreria, così non devi re-scansionare tutto
 5. Mostra nella status bar: "Disco esterno rilevato su F: (era E:)"
 
-**Per attivare questa funzione, il disco deve avere un volume label:**
-- Su Windows: tasto destro sul disco in "Questo PC" → "Proprietà" → campo "Etichetta" deve essere non vuoto
-- Se il disco ha solo "Unità locale (E:)" senza nome, l'app non può riconoscerlo dopo un cambio di lettera
+**NON serve assegnare un volume label al disco!** Il numero di serie è sempre presente su ogni disco formattato (NTFS, FAT32, exFAT).
 
-**Se il volume label non è mai stato salvato** (vecchia installazione, o se il disco non ha un nome):
-- L'app non può auto-risolvere
-- Usa il pulsante "Scegli cartella musica" per ri-selezionare la cartella sul nuovo drive
-- Da quel momento in poi il volume label viene salvato e l'auto-remap funzionerà
+**Quando il rilevamento automatico NON funziona:**
+- Hai formattato il disco da zero (il serial cambia)
+- Hai clonato il disco con un tool sector-by-sector (serial duplicato)
+- Stai usando un disco su rete o NAS (non ha drive letter)
+
+In questi rari casi, usa semplicemente il pulsante **"Scegli cartella musica"** per ri-selezionare la cartella sul nuovo disco.
 
 ### Il pulsante "Confronta con Libreria" è disabilitato
 **Causa:** la cartella musica salvata non esiste più sul disco (es. `E:/Musica` ma `E:` non è più montato). L'app non può scansionare una cartella che non c'è.
 
-**Soluzione:** vedi sopra — auto-remap via volume label, oppure usa "Scegli cartella musica" per puntare al nuovo path.
+**Soluzione:** vedi sopra — auto-remap via volume serial, oppure usa "Scegli cartella musica" per puntare al nuovo path.
 
 ### Devo chiudere Serato mentre uso l'app?
 Per **creare** una crate con nome nuovo: no, l'app scrive il file `.crate` senza

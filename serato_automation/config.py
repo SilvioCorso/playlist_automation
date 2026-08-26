@@ -8,12 +8,18 @@ from pathlib import Path
 
 DEFAULT_CONFIG = {
     "music_folder": "",
-    "music_folder_volume_label": "",   # Windows volume label of the drive hosting
-                                       # music_folder, used to auto-remap when the
-                                       # external HDD is plugged into a different USB
-                                       # port and gets assigned a new drive letter.
+    # Volume identifier for the drive hosting music_folder.
+    # Format: "serial:ABCD1234" (preferred — always present on formatted partitions)
+    # or "label:DJ MUSIC" (fallback for disks with a custom name).
+    # Used to auto-remap the path when the external HDD is plugged into
+    # a different USB port and Windows assigns a new drive letter.
+    "music_folder_volume_identifier": "",
+    # Legacy field — kept for backward compat with configs saved by
+    # older builds. New code uses music_folder_volume_identifier instead.
+    "music_folder_volume_label": "",
     "serato_folder": "",
-    "serato_folder_volume_label": "", # Same idea for the Serato folder
+    "serato_folder_volume_identifier": "",
+    "serato_folder_volume_label": "",
     "output_folder": "",
     "match_thresholds": {
         "exact": 100,
