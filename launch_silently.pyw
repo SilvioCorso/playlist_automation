@@ -218,7 +218,11 @@ def _bootstrap():
     except Exception:
         pass  # non-fatal
 
-    # 4) Install requirements.txt
+    # 4) Install requirements.txt — capture pip output so we can show WHY it
+    #    failed (network / proxy / conflict / partial install). The previous
+    #    version used _run_streamed without checking the return code, so a pip
+    #    failure was silent: the marker got written and main.py then crashed
+    #    with "DIPENDENZE MANCANTI" — invisible under pythonw.exe.
     if not os.path.exists(_REQUIREMENTS):
         _msg_box(
             "File requirements.txt non trovato.\n"
@@ -228,17 +232,70 @@ def _bootstrap():
         )
         return None
 
+    pip_log = os.path.join(_PROJECT_ROOT, "pip_install.log")
     try:
-        _run_streamed(
-            [_VENV_PY, "-m", "pip", "install", "-r", _REQUIREMENTS]
+        proc = subprocess.run(
+            [_VENV_PY, "-m", "pip", "install", "--upgrade", "-r", _REQUIREMENTS],
+            capture_output=True, text=True, timeout=600,
         )
+    except subprocess.TimeoutExpired:
+        _msg_box(
+            "Installazione delle dipendenze troppo lenta (timeout 10 min).\n"
+            "Verifica la connessione internet e riprova lanciando di nuovo\n"
+            "launch_silently.pyw.",
+            title="Errore installazione", kind="error",
+        )
+        return None
     except Exception as e:
         _msg_box(
             "Errore durante l'installazione delle dipendenze Python.\n\n"
             f"Dettagli: {e}\n\n"
             "Verifica la connessione internet e riprova.",
-            title="Errore installazione",
-            kind="error",
+            title="Errore installazione", kind="error",
+        )
+        return None
+
+    # Persist the full pip log for support, then surface the tail on failure.
+    try:
+        with open(pip_log, "w", encoding="utf-8") as f:
+            f.write(f"returncode={proc.returncode}\n\n--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}\n")
+    except Exception:
+        pass
+
+    if proc.returncode != 0:
+        tail = "\n".join((proc.stderr or proc.stdout or "").strip().splitlines()[-20:])
+        _msg_box(
+            "Installazione delle dipendenze Python fallita (errore di pip).\n\n"
+            f"{tail or '(nessun output)'}\n\n"
+            "Log completo salvato in:\n"
+            f"{pip_log}\n\n"
+            "Verifica la connessione internet e riprova lanciando di nuovo\n"
+            "launch_silently.pyw.",
+            title="Errore installazione", kind="error",
+        )
+        return None
+
+    # 4b) Verify the core deps are actually importable. A 'successful' pip run
+    #     can still leave the venv half-populated (e.g. a build failure on one
+    #     wheel); this guard refuses to write the marker until everything works.
+    try:
+        verify = subprocess.run(
+            [_VENV_PY, "-c",
+             "import PySide6, rapidfuzz, mutagen, certifi, send2trash"],
+            capture_output=True, timeout=30,
+        )
+    except Exception:
+        verify = None
+    if verify is None or verify.returncode != 0:
+        vmsg = ""
+        if verify is not None:
+            vmsg = (verify.stderr or b"").decode("utf-8", "replace")
+        _msg_box(
+            "Le dipendenze risultano ancora mancanti dopo l'installazione.\n\n"
+            f"{vmsg[-400:]}\n\n"
+            "Prova a eliminare la cartella 'venv' e rilanciare\n"
+            "launch_silently.pyw.",
+            title="Errore installazione", kind="error",
         )
         return None
 
