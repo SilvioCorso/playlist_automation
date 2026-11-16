@@ -1043,6 +1043,7 @@ class MainWindow(QMainWindow):
             hh.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
         hh.setStretchLastSection(False)
         hh.setSectionsClickable(True)
+        hh.setSectionsMovable(True)   # allow drag-reorder of columns
         hh.setSortIndicatorShown(True)
         hh.sectionClicked.connect(self._sort_editing)
         self.editing_table.setColumnWidth(E_COL_FILE, 200)
@@ -1058,24 +1059,19 @@ class MainWindow(QMainWindow):
         self.editing_table.setColumnWidth(E_COL_PLAYER, 141)
         self._editing_sort = (None, True)
 
-        # Restore saved column widths (user resizing persists across launches).
+        # Restore saved column order + widths (shared across the flat editing
+        # table and every Advanced-Duplicates accordion group table).
         self._restoring_editing_cols = True
         try:
-            saved_w = (self.config.get("editing_table_columns") or {}).get("widths") or {}
-            for col_str, w in saved_w.items():
-                try:
-                    col = int(col_str)
-                    if 0 <= col < E_NUM_COLS and int(w) > 10:
-                        self.editing_table.setColumnWidth(col, int(w))
-                except (ValueError, TypeError):
-                    continue
+            self._apply_editing_layout(self.editing_table)
         finally:
             self._restoring_editing_cols = False
-        # Debounced save on resize — same pattern as the Results table.
+        # Debounced save on resize / move — same pattern as the Results table.
         self._editing_cols_timer = QTimer(self)
         self._editing_cols_timer.setSingleShot(True)
-        self._editing_cols_timer.timeout.connect(self._save_editing_column_layout)
-        hh.sectionResized.connect(lambda *_: self._schedule_save_editing_columns())
+        self._editing_cols_timer.timeout.connect(self._on_editing_cols_changed)
+        hh.sectionResized.connect(lambda *_, t=self.editing_table: self._schedule_save_editing_columns(t))
+        hh.sectionMoved.connect(lambda *_, t=self.editing_table: self._schedule_save_editing_columns(t))
 
         # Stacked container: page 0 = the flat editing table (used by Easy
         # Duplicates / Clean Library / Find Differences); page 1 = the Advanced
@@ -1113,26 +1109,93 @@ class MainWindow(QMainWindow):
             tr("edit_col_player"),
         ]
 
-    def _schedule_save_editing_columns(self, *_args):
+    def _all_editing_tables(self):
+        """All QTableWidgets that share the editing column layout: the flat
+        editing table + every Advanced-Duplicates accordion group table."""
+        tables = []
+        if hasattr(self, "editing_table"):
+            tables.append(self.editing_table)
+        tables.extend(getattr(self, "_dup_group_tables", []))
+        return tables
+
+    def _schedule_save_editing_columns(self, source=None, *_args):
         if getattr(self, "_restoring_editing_cols", False):
             return
+        if source is not None:
+            self._editing_cols_source = source
         if hasattr(self, "_editing_cols_timer"):
             self._editing_cols_timer.start(250)
 
-    def _save_editing_column_layout(self):
-        """Persist the editing-table column widths so the user's resizing
-        survives across launches (same UX as the Results table)."""
+    def _on_editing_cols_changed(self):
+        """Timer callback: save the layout from the table that changed and
+        propagate it to every other editing table so they stay in sync."""
+        src = getattr(self, "_editing_cols_source", None)
+        if src is None:
+            src = self.editing_table if hasattr(self, "editing_table") else None
+        if src is None:
+            return
+        self._save_editing_layout_from(src)
+        self._propagate_editing_layout(exclude=src)
+
+    def _save_editing_layout_from(self, table):
+        """Read the visual order + widths of the standard E_NUM_COLS columns
+        from *table* and persist them to config."""
         if getattr(self, "_restoring_editing_cols", False):
             return
-        if not hasattr(self, "editing_table"):
-            return
-        header = self.editing_table.horizontalHeader()
-        widths = {str(c): header.sectionSize(c) for c in range(E_NUM_COLS)}
-        self.config["editing_table_columns"] = {"widths": widths}
+        header = table.horizontalHeader()
+        order = [header.logicalIndex(v) for v in range(min(E_NUM_COLS, header.count()))]
+        widths = {str(c): header.sectionSize(c)
+                  for c in range(min(E_NUM_COLS, header.count()))}
+        self.config["editing_table_columns"] = {"order": order, "widths": widths}
         try:
             save_config(self.config)
         except Exception:
             pass
+
+    def _apply_editing_layout(self, table):
+        """Apply the saved column order + widths (config) to *table*."""
+        saved = self.config.get("editing_table_columns") or {}
+        widths = saved.get("widths") or {}
+        order = saved.get("order") or []
+        header = table.horizontalHeader()
+        n = min(E_NUM_COLS, header.count())
+        for col_str, w in widths.items():
+            try:
+                col = int(col_str)
+                if 0 <= col < n and int(w) > 10:
+                    header.resizeSection(col, int(w))
+            except (ValueError, TypeError):
+                continue
+        if order and len(order) >= n:
+            self._restoring_editing_cols = True
+            try:
+                for target_visual, logical in enumerate(order[:n]):
+                    if not (0 <= logical < header.count()):
+                        continue
+                    cur = header.visualIndex(logical)
+                    if cur != target_visual:
+                        header.moveSection(cur, target_visual)
+            finally:
+                self._restoring_editing_cols = False
+
+    def _propagate_editing_layout(self, exclude):
+        """Apply the saved layout to every editing table except *exclude* (the
+        one the user just changed — it's already correct)."""
+        if getattr(self, "_restoring_editing_cols", False):
+            return
+        self._restoring_editing_cols = True
+        try:
+            for t in self._all_editing_tables():
+                if t is exclude:
+                    continue
+                self._apply_editing_layout(t)
+        finally:
+            self._restoring_editing_cols = False
+
+    def _save_editing_column_layout(self):
+        """Backward-compat wrapper (closeEvent) — save from the flat table."""
+        if hasattr(self, "editing_table"):
+            self._save_editing_layout_from(self.editing_table)
 
     # ------------------------------------------------------------------
     # Startup
@@ -1921,6 +1984,7 @@ class MainWindow(QMainWindow):
         accordion scroll handles the page.
         """
         self._clear_duplicate_accordion()
+        self._dup_group_tables = []   # rebuilt below as each group is created
         vlay = self._dup_accordion_vlayout
         p = ui_theme.palette()
 
@@ -1988,6 +2052,7 @@ class MainWindow(QMainWindow):
         group_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectItems)
         gh = group_table.horizontalHeader()
         gh.setStretchLastSection(False)
+        gh.setSectionsMovable(True)   # allow drag-reorder of columns
         group_table.setColumnWidth(E_COL_FILE, 200)
         group_table.setColumnWidth(E_COL_TITLE, 230)
         group_table.setColumnWidth(E_COL_ARTIST, 170)
@@ -2001,6 +2066,19 @@ class MainWindow(QMainWindow):
         group_table.setColumnWidth(E_COL_PLAYER, 141)
         vicinanza_col = E_NUM_COLS
         group_table.setColumnWidth(vicinanza_col, 90)
+
+        # Restore the shared column order + widths (same layout as the flat
+        # editing table and every other accordion group table).
+        self._restoring_editing_cols = True
+        try:
+            self._apply_editing_layout(group_table)
+        finally:
+            self._restoring_editing_cols = False
+        # Propagate column moves/resizes from this table to all the others.
+        gh.sectionResized.connect(lambda *_, t=group_table: self._schedule_save_editing_columns(t))
+        gh.sectionMoved.connect(lambda *_, t=group_table: self._schedule_save_editing_columns(t))
+        # Track this table so layout changes on other tables propagate to it.
+        self._dup_group_tables.append(group_table)
 
         group_tracks = [t for t, _s in g["tracks"]]
         entries = [
@@ -2018,16 +2096,19 @@ class MainWindow(QMainWindow):
             vitem.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             group_table.setItem(row, vicinanza_col, vitem)
 
-        # Fit the table height to ALL rows — no inner scrollbar. The outer
-        # accordion scroll handles the page. Cap at a sane max so a 100-row
-        # group doesn't take the whole screen (it then scrolls internally).
+        # Vertical scrollbar: OFF when the group has <= 5 rows (all rows fit
+        # comfortably, no inner scroll); ON only when duplicates exceed 5 so a
+        # big group doesn't take the whole screen.
         n_rows = group_table.rowCount()
         hh_h = group_table.horizontalHeader().height() + 2
-        total_h = n_rows * 34 + hh_h
-        group_table.setMinimumHeight(min(total_h, 600))
-        group_table.setVerticalScrollBarPolicy(
-            Qt.ScrollBarPolicy.ScrollBarAsNeeded if total_h > 600
-            else Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        row_h = 34
+        if n_rows <= 5:
+            group_table.setMinimumHeight(n_rows * row_h + hh_h)
+            group_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        else:
+            # cap at 5 visible rows + header, inner scroll for the rest
+            group_table.setMinimumHeight(5 * row_h + hh_h)
+            group_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         content_layout.addWidget(group_table)
 
     def _populate_editing_table(self, tracks):

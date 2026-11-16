@@ -51,6 +51,7 @@ DEFAULT_CONFIG = {
         "widths": {},
     },
     "editing_table_columns": {
+        "order": [],
         "widths": {},
     },
     "table_fit_columns": False,
