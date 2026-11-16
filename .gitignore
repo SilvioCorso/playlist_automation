@@ -9,6 +9,7 @@
 config.json
 title_locks.json
 library_cache_*.pkl
+library_cache_*.json
 serato_debug.log
 launch_error.log
 pip_install.log
