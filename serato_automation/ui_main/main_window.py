@@ -76,6 +76,9 @@ class MainWindow(QMainWindow):
         # fail. We degrade gracefully (player column disabled) instead of crashing.
         self._player_available = False
         self._player_current_row = -1
+        # Which table owns the playing row: "results" | "editing" | None.
+        # Lets the shared QMediaPlayer drive PlayerCellWidgets in BOTH tables.
+        self._player_current_source = None
         try:
             self._player = QMediaPlayer(self)
             self._audio_output = QAudioOutput(self)
@@ -103,33 +106,75 @@ class MainWindow(QMainWindow):
         """Handle QMediaPlayer errors without crashing — log and keep going."""
         self._logger.warning("QMediaPlayer error: %s (%s)", error_string, error)
 
+    def _get_active_player_widget(self):
+        """Return the PlayerCellWidget for the row currently playing.
+
+        The active row may live in the Results table OR the Editing table
+        (self._player_current_source tells us which). Centralising this lookup
+        keeps the shared QMediaPlayer in sync across both tables.
+        """
+        if self._player_current_row < 0:
+            return None
+        if self._player_current_source == "editing":
+            if not hasattr(self, "editing_table"):
+                return None
+            w = self.editing_table.cellWidget(self._player_current_row, E_COL_PLAYER)
+            from serato_automation.ui_main.widgets import PlayerCellWidget
+            return w if isinstance(w, PlayerCellWidget) else None
+        # default / "results"
+        return self.results_table.get_player_widget(self._player_current_row)
+
     def _player_play_row(self, row: int):
-        """Play audio for the given row — stop previous row first."""
+        """Play audio for the given RESULTS-table row — stop previous first."""
         if not self._player_available:
             return
-        # Same row already active: either resume from pause or do nothing (already playing)
-        if self._player_current_row == row:
+        # Same results row already active: resume from pause or do nothing.
+        if (self._player_current_source == "results"
+                and self._player_current_row == row):
             if self._player.playbackState() == QMediaPlayer.PlaybackState.PausedState:
                 self._player.play()
             return
-
-        # Stop previous row if playing a different row
+        # Stop whatever is playing in EITHER table first.
         if self._player_current_row >= 0:
             self._player_stop_current()
-
         if row < 0 or row >= len(self.match_results):
             return
-
         result = self.match_results[row]
         if not result.is_effectively_matched or not result.library_track:
             return
-
         filepath = result.library_track.filepath
         if not filepath or not os.path.isfile(filepath):
             return
-
         self._player_current_row = row
+        self._player_current_source = "results"
+        url = QUrl.fromLocalFile(os.path.abspath(filepath))
+        self._player.setSource(url)
+        self._player.play()
 
+    def _player_play_editing_row(self, row: int):
+        """Play audio for the given EDITING-table row — stop previous first.
+
+        Mirror of _player_play_row but the filepath comes from self._row_tracks
+        (the editing-table rows) instead of match_results.
+        """
+        if not self._player_available:
+            return
+        if (self._player_current_source == "editing"
+                and self._player_current_row == row):
+            if self._player.playbackState() == QMediaPlayer.PlaybackState.PausedState:
+                self._player.play()
+            return
+        if self._player_current_row >= 0:
+            self._player_stop_current()
+        tracks = getattr(self, "_row_tracks", [])
+        if row < 0 or row >= len(tracks):
+            return
+        track = tracks[row]
+        filepath = getattr(track, "filepath", "") or ""
+        if not filepath or not os.path.isfile(filepath):
+            return
+        self._player_current_row = row
+        self._player_current_source = "editing"
         url = QUrl.fromLocalFile(os.path.abspath(filepath))
         self._player.setSource(url)
         self._player.play()
@@ -142,15 +187,17 @@ class MainWindow(QMainWindow):
             self._player.pause()
 
     def _player_stop_current(self):
-        """Stop playback and reset the player widget for current row."""
+        """Stop playback and reset the player widget for the current row
+        (whichever table it lives in)."""
         if not self._player_available:
             return
         if self._player_current_row >= 0:
-            pw = self.results_table.get_player_widget(self._player_current_row)
+            pw = self._get_active_player_widget()
             if pw:
                 pw.set_playing(False)
         self._player.stop()
         self._player_current_row = -1
+        self._player_current_source = None
 
     def _player_seek(self, position: int):
         """Seek to the given position (ms) in the current track.
@@ -173,7 +220,7 @@ class MainWindow(QMainWindow):
         """Update the slider of the currently playing row."""
         if not self._player_available or self._player_current_row < 0:
             return
-        pw = self.results_table.get_player_widget(self._player_current_row)
+        pw = self._get_active_player_widget()
         if pw:
             duration = self._player.duration()
             pw.update_position(position, duration)
@@ -182,7 +229,7 @@ class MainWindow(QMainWindow):
         """Update play/pause button when playback state changes."""
         if not self._player_available or self._player_current_row < 0:
             return
-        pw = self.results_table.get_player_widget(self._player_current_row)
+        pw = self._get_active_player_widget()
         if not pw:
             return
 
@@ -924,6 +971,7 @@ class MainWindow(QMainWindow):
         self.editing_table.setColumnWidth(E_COL_LOCATION, 260)
         self.editing_table.setColumnWidth(E_COL_ACTION, 90)
         self.editing_table.setColumnWidth(E_COL_DELETE, 100)
+        self.editing_table.setColumnWidth(E_COL_PLAYER, 141)
         self._editing_sort = (None, True)
         ed_layout.addWidget(self.editing_table, stretch=1)
 
@@ -941,6 +989,7 @@ class MainWindow(QMainWindow):
             tr("edit_col_location"),
             tr("edit_col_action"),
             tr("edit_col_delete"),
+            tr("edit_col_player"),
         ]
 
     # ------------------------------------------------------------------
@@ -1688,6 +1737,11 @@ class MainWindow(QMainWindow):
         cell values, sorts them, and rebuilds so the button columns stay aligned).
         """
         table = self.editing_table
+        # Repopulate destroys every cell widget — stop the player first so the
+        # shared QMediaPlayer is not left pointing at a destroyed widget (which
+        # would make _on_player_state_changed find None and silently break).
+        if getattr(self, "_player_current_source", None) == "editing":
+            self._player_stop_current()
         table.setRowCount(0)
         table.setRowCount(len(entries))
         self._row_tracks = [e["track"] for e in entries]
@@ -1749,6 +1803,26 @@ class MainWindow(QMainWindow):
                 lambda _=False, t=track: self._editing_delete_row(t)
             )
             table.setCellWidget(row, E_COL_DELETE, del_btn)
+
+            # Player column — same PlayerCellWidget as the Results table, wired
+            # to the SAME shared QMediaPlayer (so playing a row here stops any
+            # row playing in the Results table, and vice versa).
+            epath = track.filepath or ""
+            if epath and os.path.isfile(epath):
+                pw = PlayerCellWidget(row)
+                pw.set_has_file(True)
+                pw.set_track_name(track.display_name or os.path.basename(epath))
+                pw.play_requested.connect(self._player_play_editing_row)
+                pw.pause_requested.connect(self._player_pause)
+                pw.seek_requested.connect(self._player_seek)
+                table.setCellWidget(row, E_COL_PLAYER, pw)
+            else:
+                pitem = QTableWidgetItem("-")
+                pitem.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                pitem.setForeground(QColor("#bbb"))
+                pitem.setFlags(Qt.ItemFlag.NoItemFlags)
+                table.setItem(row, E_COL_PLAYER, pitem)
+
             table.setRowHeight(row, 34)
 
         has_rows = len(entries) > 0
