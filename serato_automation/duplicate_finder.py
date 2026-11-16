@@ -1,34 +1,27 @@
 # Serato Playlist Automation
-# Advanced duplicate finder — longest-segment title clustering.
+# Advanced duplicate finder — substring-based title clustering.
 #
-# Two tracks are duplicates when they share the SONG-TITLE SEGMENT, where the
-# song-title segment is the LONGEST segment (by token count) of the title after
-# splitting on " - " and normalising (parentheticals / accents / mojibake
-# stripped). The artist / detail segment is almost always SHORTER than the song
-# title segment, so it is never the longest and never triggers clustering.
+# Two tracks are duplicates when one track's normalised title is a SUBSTRING
+# (contiguous) of the other's. The accordion title is that shared string — by
+# construction it is literally FOUND IN the song titles of every member.
 #
-# This fixes the artist over-clustering that defeated the rarity filter:
-# "Eiffel 65 - Move Your Body", "Eiffel 65 - Blue", "Eiffel 65 - Enjoy the
-# Silence" all shared the segment "eiffel 65" (the artist, 2 tokens) and were
-# wrongly collapsed into one 18-track group. With the longest-segment rule:
-#   "Eiffel 65 - Move Your Body"  longest seg = "move your body" (3 tok)
-#   "Eiffel 65 - Blue"            longest seg = "blue" (1 tok -> dropped)
-#   -> they share NO longest segment -> NOT clustered.
-#   "Move Your Body (128kbit)"    longest seg = "move your body" (3 tok)
-#   -> shares "move your body" with the Eiffel track -> CLUSTER (same song).
+# This replaces the old "longest segment" rule (which was nonsense: it split on
+# ' - ' and tie-broke on STRING LENGTH, so the artist 'adonis fr' could become
+# the 'longest' segment of a track whose song title had the same token count,
+# then united 20 different Adonis FR songs into one bogus group).
 #
-# "On My Mind" / "On My Mind (MK Remix)" / "On My Mind - Diplo & SIDEPIECE"
-# all have "on my mind" as their longest segment -> CLUSTER.
-# "my mind" / "on my mind" / "take my mind" have DIFFERENT longest segments
-# ("my mind", "on my mind", "take my mind") -> NOT clustered.
+# Validation (rule 2): after clustering, the accordion title (the shortest
+# normalised title in the cluster) MUST be a substring of EVERY member's title.
+# If it is not, the cluster is a transitivity artefact (A⊆B and C⊆B united A
+# and C even though they share nothing) and is discarded.
 #
-# Single-token segments are dropped (a one-word title like "Love" is too
-# generic). When a track's longest segment has < 2 tokens it can't cluster.
+# Step 1 (artist-name exclusion, kept): if the accordion title matches the
+# artist of any member, the group is artist-keyed, not song-keyed -> skip.
 
 from collections import defaultdict
 import re
 import unicodedata
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from .library_reader import LibraryTrack, normalize_string, repair_mojibake
 
@@ -41,13 +34,13 @@ _PARENS_RE = re.compile(r"[()]")
 
 
 def _dup_norm(s: str) -> str:
-    """Normalise a title segment for duplicate matching.
+    """Normalise a title for duplicate matching.
 
-    Lowercase, repair mojibake, strip accents, underscores -> spaces. Then
-    strip parentheticals — BUT if the result has fewer than MIN_TOKENS tokens
-    (e.g. 'Blue (Da Ba Dee)' -> 'blue', 1 token), retry keeping the parenthetical
-    content ('blue da ba dee', 4 tokens) so the song title is not lost and the
-    artist segment does not become the longest.
+    Lowercase, repair mojibake, strip accents, underscores -> spaces, remove
+    dashes (so 'On My Mind - Diplo' -> 'on my mind diplo'), and ALWAYS strip
+    parentheticals ('(MK Remix)', '(128kbit_AAC)', '(Official Video)', '(v2)').
+    Consistent stripping is required so two rips of the same song with DIFFERENT
+    parenthetical tags still normalise to the same string.
     """
     s = s.lower()
     try:
@@ -55,113 +48,49 @@ def _dup_norm(s: str) -> str:
     except Exception:
         pass
     s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
-    s = s.replace("_", " ")
-
-    stripped = _PAREN_RE.sub("", s)
-    stripped = re.sub(r"\s+", " ", stripped).strip()
-    toks = [t for t in stripped.split() if re.search(r"[a-z0-9]", t)]
-    if len(toks) >= MIN_TOKENS:
-        return stripped
-    # Too short after stripping parentheticals — keep the parenthetical content
-    # (just remove the bracket characters themselves).
-    kept = _PARENS_RE.sub("", s)
-    kept = re.sub(r"\s+", " ", kept).strip()
-    return kept
+    s = s.replace("_", " ").replace("-", " ")
+    s = _PAREN_RE.sub("", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
 
-def _segment_tokens(seg: str) -> set:
-    """Tokens of a segment (drops pure-punctuation tokens like '-')."""
-    return {t for t in seg.split() if re.search(r"[a-z0-9]", t)}
-
-
-def _title_segments(raw_title: str) -> List[Tuple[str, str]]:
-    """Split a RAW title on ' - ' and normalise each segment.
-
-    Returns (raw_segment, normalized_segment) pairs for segments with at least
-    MIN_TOKENS tokens. The split happens BEFORE normalisation because the dash
-    would otherwise be lost. Uses _dup_norm (adaptive parenthetical stripping)
-    instead of normalize_string so a title like 'Blue (Da Ba Dee)' keeps its
-    subtitle instead of collapsing to a single token.
-    """
-    out = []
-    for raw in raw_title.split(" - "):
-        norm = _dup_norm(raw)
-        if norm and len(_segment_tokens(norm)) >= MIN_TOKENS:
-            out.append((raw.strip(), norm))
-    return out
-
-
-def _longest_segment(segs: List[Tuple[str, str]]) -> Optional[Tuple[str, str]]:
-    """Return the (raw, norm) segment with the most tokens; tie-break by length."""
-    if not segs:
-        return None
-    return max(segs, key=lambda rs: (len(_segment_tokens(rs[1])), len(rs[1])))
+def _tokens(s: str) -> List[str]:
+    return [t for t in s.split() if re.search(r"[a-z0-9]", t)]
 
 
 def find_advanced_duplicates(
     tracks: List[LibraryTrack],
     min_similarity: int = 75,
 ) -> List[Dict]:
-    """Cluster *tracks* that share a song-title (longest) segment.
+    """Cluster *tracks* whose normalised title is a substring of another's.
 
-    Returns a list of groups, each::
-        {
-          "representative_title": str,
-          "count": int,
-          "tracks": [(LibraryTrack, int)],
-        }
-    Groups have >= 2 members, sorted by count desc then title.
+    Returns groups with >= 2 members, each::
+        { "representative_title": str, "count": int,
+          "tracks": [(LibraryTrack, int)] }
     """
-    # 1) Segment each title; compute its longest segment (the song title).
-    items: List[Tuple[LibraryTrack, str, List[Tuple[str, str]], Optional[Tuple[str, str]]]] = []
+    # 1) Normalise each title; keep tracks with a >=2-token normalised title.
+    items: List[Tuple[LibraryTrack, str]] = []  # (track, norm_title)
     for t in tracks:
         raw = (t.title or "").strip()
         if not raw:
             continue
-        segs = _title_segments(raw)
-        if not segs:
-            continue
-        longest = _longest_segment(segs)
-        if longest is None:
-            continue
-        nt = normalize_string(raw).strip()
-        items.append((t, nt, segs, longest))
+        nt = _dup_norm(raw)
+        if nt and len(_tokens(nt)) >= MIN_TOKENS:
+            items.append((t, nt))
     n = len(items)
     if n < 2:
         return []
 
-    # 2) Step 1 — artist-name exclusion.
-    #    A segment that coincides EXACTLY (normalised) with the artist of ANY
-    #    track that contains it is an ARTIST NAME, not a song title. Such
-    #    segments are NEVER treated as song keys -> they don't drive clustering
-    #    (an artist must not unite different songs, and a group whose title
-    #    would be the artist is not reported as a duplicate).
-    all_inv: Dict[str, List[int]] = defaultdict(list)
-    for i, (_t, _nt, segs, _longest) in enumerate(items):
-        for _r, norm in segs:
-            all_inv[norm].append(i)
-    artist_segments: set = set()
-    for s, idxs in all_inv.items():
-        for i in idxs:
-            if _dup_norm(items[i][0].artist or "") == s:
-                artist_segments.add(s)
-                break
-
-    # 3) A segment is a "song-title key" when it is the LONGEST segment of at
-    #    least one track AND it is not an artist-name segment.
-    song_keys: set = set()
-    for _t, _nt, _segs, longest in items:
-        if longest is not None and longest[1] not in artist_segments:
-            song_keys.add(longest[1])
-
-    # 4) Inverted index: normalized song-key segment -> list of item indices.
+    # 2) Inverted index: token -> tracks whose norm_title CONTAINS that token.
+    #    A substring must share every token with the superset, so we block on
+    #    the RAREST token of each track's title to find candidate supersets.
     inv: Dict[str, List[int]] = defaultdict(list)
-    for i, (_t, _nt, segs, _longest) in enumerate(items):
-        for _r, norm in segs:
-            if norm in song_keys:
-                inv[norm].append(i)
+    for i, (_t, nt) in enumerate(items):
+        for tok in set(_tokens(nt)):
+            inv[tok].append(i)
 
-    # 5) Union-find; union tracks that share a song-key segment.
+    # 3) Union-find; union i and j when norm_title(i) is a substring of
+    #    norm_title(j) or vice versa (contiguous substring, Python 'in').
     parent = list(range(n))
 
     def find(x: int) -> int:
@@ -175,14 +104,21 @@ def find_advanced_duplicates(
         if ra != rb:
             parent[ra] = rb
 
-    for seg, idxs in inv.items():
-        if len(idxs) < 2:
+    for i in range(n):
+        si = items[i][1]
+        sitoks = _tokens(si)
+        if not sitoks:
             continue
-        base = idxs[0]
-        for other in idxs[1:]:
-            union(base, other)
+        # candidates = tracks containing the rarest token of si (smallest block).
+        rarest = min(sitoks, key=lambda t: len(inv.get(t, [])))
+        for j in inv.get(rarest, []):
+            if j == i:
+                continue
+            nj = items[j][1]
+            if si == nj or si in nj or nj in si:
+                union(i, j)
 
-    # 5) Build clusters (>= 2 members).
+    # 4) Build clusters (>= 2 members).
     clusters: Dict[int, List[int]] = defaultdict(list)
     for i in range(n):
         clusters[find(i)].append(i)
@@ -191,40 +127,29 @@ def find_advanced_duplicates(
     for members in clusters.values():
         if len(members) < 2:
             continue
-        # Representative = the member whose longest segment is shared by the
-        # most other members (the defining song title). Fall back to the
-        # member with the shortest full title.
-        seg_count: Dict[str, int] = defaultdict(int)
-        for m in members:
-            seg_count[items[m][3][1]] += 1
-        defining_norm = max(seg_count, key=seg_count.get)
+        # Accordion title = the SHORTEST norm_title in the cluster (the common
+        # substring that is contained in every other member's title).
+        members_by_len = sorted(members, key=lambda m: len(items[m][1]))
+        rep = members_by_len[0]
+        rep_norm = items[rep][1]
 
-        # --- Step 1: artist-name exclusion -------------------------------
-        # If the defining segment (the accordion title) coincides EXACTLY with
-        # any track's artist (normalised), the group is keyed on an ARTIST name,
-        # not a song title -> skip it. The goal is song duplicates, not artist
-        # duplicates (e.g. an "Vasco Rossi" accordion where every row's artist is
-        # "Vasco Rossi" must NOT be reported).
-        artist_norms = {_dup_norm(items[m][0].artist or "") for m in members}
-        artist_norms.discard("")
-        if defining_norm in artist_norms:
+        # Rule 2 — validation: the accordion string MUST be a substring of EVERY
+        # member's title. If some member does not contain it, the cluster is a
+        # transitivity artefact -> discard it.
+        if not all(rep_norm in items[m][1] for m in members):
             continue
 
-        # Pick the raw form of the defining segment: the SHORTEST raw among
-        # members that have it, with trailing parentheticals stripped.
-        import re as _re
-        raws = []
-        for m in members:
-            for r, norm in items[m][2]:
-                if norm == defining_norm:
-                    cleaned = _re.sub(r"\s*\([^)]*\)", "", r).strip() or r
-                    raws.append(cleaned)
-                    break
-        rep_title = min(raws, key=len) if raws else items[members[0]][0].title or ""
+        # Step 1 — artist-name exclusion: if the accordion string matches the
+        # artist (normalised) of any member, this is an artist-keyed group -> skip.
+        artist_norms = {_dup_norm(items[m][0].artist or "") for m in members}
+        artist_norms.discard("")
+        if rep_norm in artist_norms:
+            continue
 
-        rep = min(members, key=lambda m: (len(items[m][1]), len(items[m][2])))
-        rep_norm = items[rep][1]
-        rep_longest_norm = items[rep][3][1]
+        # Display title: the raw title of the rep, with trailing parentheticals
+        # stripped; fall back to the norm string.
+        rep_raw = items[rep][0].title or ""
+        rep_title = _PAREN_RE.sub("", rep_raw).strip() or rep_raw or rep_norm
 
         members_scored: List[Tuple[LibraryTrack, int]] = []
         for m in members:
@@ -233,10 +158,8 @@ def find_advanced_duplicates(
                 score = 100
             elif items[m][1] == rep_norm:
                 score = 100
-            elif items[m][3][1] == rep_longest_norm:
-                score = 95
             else:
-                score = 85
+                score = 95
             members_scored.append((t, score))
         members_scored.sort(key=lambda x: -x[1])
         groups.append({
