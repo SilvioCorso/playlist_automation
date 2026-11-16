@@ -16,7 +16,7 @@
     ".mp3", ".flac", ".m4a", ".wav", ".aiff", ".ogg", ".wma", ".aac"
   ],
   "fuzzy_cache_enabled": true,
-  "theme": "light",
+  "theme": "dark",
   "visible_columns": {
     "lock": true, "select": true, "score": true, "found": true,
     "titolo_richiesto": true, "filename": true, "artista_serato": true,

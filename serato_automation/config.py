@@ -31,7 +31,7 @@ DEFAULT_CONFIG = {
         ".mp3", ".flac", ".m4a", ".wav", ".aiff", ".ogg", ".wma", ".aac"
     ],
     "fuzzy_cache_enabled": True,
-    "theme": "light",
+    "theme": "dark",
     "visible_columns": {
         "lock": True, "select": True, "score": True, "found": True,
         "titolo_richiesto": True, "filename": True, "artista_serato": True,

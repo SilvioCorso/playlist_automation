@@ -625,7 +625,7 @@ class ResultsTable(QTableWidget):
             )
             label.setProperty("_found_count", display_count)
             label.setStyleSheet(
-                f"color: {'#9b7de0' if _DARK_THEME_ACTIVE else '#4927af'}; "
+                f"color: {'#9b7de0' if ui_theme.is_dark() else '#4927af'}; "
                 f"font-weight: bold; font-size: {self._font_size}px; "
                 "text-decoration: underline; padding: 0 2px; background: transparent;"
             )
@@ -636,14 +636,14 @@ class ResultsTable(QTableWidget):
             # Exactly 1 candidate (above or below threshold) — show "1"
             item = QTableWidgetItem("1")
             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            item.setForeground(QColor("#c5cae0" if _DARK_THEME_ACTIVE else "#95a5a6"))
+            item.setForeground(QColor("#c5cae0" if ui_theme.is_dark() else "#95a5a6"))
             item.setFont(self._cell_font())
             self.setItem(row, COL_FOUND, item)
         else:
             # No match at all — show "0"
             item = QTableWidgetItem("0")
             item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            item.setForeground(QColor("#ff7070" if _DARK_THEME_ACTIVE else "#c0392b"))
+            item.setForeground(QColor("#ff7070" if ui_theme.is_dark() else "#c0392b"))
             item.setFont(self._cell_font())
             self.setItem(row, COL_FOUND, item)
 
@@ -789,7 +789,7 @@ class ResultsTable(QTableWidget):
         if result.is_effectively_matched:
             bg = score_to_bg_color(eff)
         else:
-            bg = QColor(72, 22, 22) if _DARK_THEME_ACTIVE else QColor(255, 195, 195)
+            bg = QColor(72, 22, 22) if ui_theme.is_dark() else QColor(255, 195, 195)
         bg_css = f"background-color: {bg.name()};"
         for col in range(self.columnCount()):
             item = self.item(i, col)
@@ -1138,7 +1138,7 @@ class ResultsTable(QTableWidget):
         dupes = {fn for fn, cnt in filename_counts.items() if cnt > 1}
         if not dupes:
             return
-        cyan = QColor(20, 55, 72) if _DARK_THEME_ACTIVE else QColor(179, 229, 252)
+        cyan = QColor(20, 55, 72) if ui_theme.is_dark() else QColor(179, 229, 252)
         for i, r in enumerate(self.results):
             if r.is_effectively_matched and r.library_track:
                 fn = os.path.basename(r.library_track.filepath or "")

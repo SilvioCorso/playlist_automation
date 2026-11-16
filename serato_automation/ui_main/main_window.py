@@ -958,10 +958,12 @@ class MainWindow(QMainWindow):
 
     def _apply_theme(self, theme: str):
         """Apply light or dark stylesheet to the whole application."""
-        global _DARK_THEME_ACTIVE
+        # ui_theme is the SINGLE source of truth for the dark flag — styles.py
+        # score_to_bg_color and results_table row colours read ui_theme.is_dark().
+        # (The old `global _DARK_THEME_ACTIVE` wrote to this module's namespace
+        #  and never reached styles.py after the package split.)
         self._current_theme = theme
-        _DARK_THEME_ACTIVE = (theme == "dark")
-        ui_theme.set_dark_active(_DARK_THEME_ACTIVE)
+        ui_theme.set_dark_active(theme == "dark")
         font_size = self.config.get("font_size", 11)
         QApplication.instance().setStyleSheet(_make_stylesheet(theme, font_size))
         self._update_dynamic_label_fonts(font_size)
@@ -984,7 +986,7 @@ class MainWindow(QMainWindow):
     def _update_dynamic_label_fonts(self, font_size: int) -> None:
         """Refresh inline font-size on labels that use custom stylesheets."""
         small = max(8, font_size - 1)
-        stats_color = "#e0e4ef" if _DARK_THEME_ACTIVE else "#2c3e50"
+        stats_color = "#e0e4ef" if ui_theme.is_dark() else "#2c3e50"
         self.result_stats.setStyleSheet(
             f"font-weight: bold; color: {stats_color}; font-size: {font_size}px;"
         )

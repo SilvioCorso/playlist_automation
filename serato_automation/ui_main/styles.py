@@ -42,13 +42,17 @@ from serato_automation.log_handler import setup_logging, get_log_file_path
 
 from .constants import *
 
-# Module-level flag: set True when dark theme is active.
-# Updated by MainWindow._apply_theme() — read by score_to_bg/text_color and row highlighters.
-_DARK_THEME_ACTIVE: bool = False
+# Theme state is owned by serato_automation.ui_theme (single source of truth,
+# updated by MainWindow._apply_theme via ui_theme.set_dark_active()). The former
+# module-level _DARK_THEME_ACTIVE bool was a DUPLICATE flag that broke when this
+# module was split out of the monolith: MainWindow._apply_theme wrote to its OWN
+# module global (not this one), so score_to_bg_color always saw False = light
+# colours even in dark mode → unreadable rows. All readers now go through
+# ui_theme.is_dark() so they see the live value.
 def score_to_bg_color(score: int) -> QColor:
     """Map a match score to a background colour — adapts to current theme."""
     score = max(0, min(100, score))
-    if _DARK_THEME_ACTIVE:
+    if ui_theme.is_dark():
         if score <= 50:
             return QColor(72, 22, 22)
         t = (score - 50) / 50.0
@@ -61,7 +65,7 @@ def score_to_bg_color(score: int) -> QColor:
 
 
 def score_to_text_color(score: int) -> QColor:
-    if _DARK_THEME_ACTIVE:
+    if ui_theme.is_dark():
         if score >= 75:
             return QColor("#5deb9a")
         if score >= 55:
@@ -525,4 +529,4 @@ def _make_stylesheet(theme: str, font_size: int = 11) -> str:
     return base
 
 
-__all__ = ['_DARK_THEME_ACTIVE', 'score_to_bg_color', 'score_to_text_color', 'APP_STYLESHEET', 'DARK_APP_STYLESHEET', '_make_stylesheet']
+__all__ = ['score_to_bg_color', 'score_to_text_color', 'APP_STYLESHEET', 'DARK_APP_STYLESHEET', '_make_stylesheet']
