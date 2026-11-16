@@ -82,6 +82,11 @@ class MainWindow(QMainWindow):
         # Which table owns the playing row: "results" | "editing" | None.
         # Lets the shared QMediaPlayer drive PlayerCellWidgets in BOTH tables.
         self._player_current_source = None
+        # Direct reference to the PlayerCellWidget currently playing. Captured
+        # via sender() at play time so state/position updates reach the widget
+        # WITHOUT any row/source lookup (which could miss on edge cases and
+        # leave the button stuck on 'play' / the slider without a duration).
+        self._player_active_widget = None
         try:
             self._player = QMediaPlayer(self)
             self._audio_output = QAudioOutput(self)
@@ -123,7 +128,7 @@ class MainWindow(QMainWindow):
         """
         if not self._player_available or duration <= 0:
             return
-        pw = self._get_active_player_widget()
+        pw = getattr(self, "_player_active_widget", None) or self._get_active_player_widget()
         if pw:
             pw.update_position(self._player.position(), duration)
 
@@ -185,6 +190,10 @@ class MainWindow(QMainWindow):
             return
         self._player_current_row = row
         self._player_current_source = "results"
+        # Capture the widget directly (sender() = the PlayerCellWidget that
+        # emitted play_requested) so state/position updates don't depend on a
+        # row/source lookup that could miss.
+        self._player_active_widget = self.sender() or self.results_table.get_player_widget(row)
         url = QUrl.fromLocalFile(os.path.abspath(filepath))
         self._player.setSource(url)
         self._player.play()
@@ -217,6 +226,10 @@ class MainWindow(QMainWindow):
         self._player_editing_tracks = tracks
         self._player_current_row = row
         self._player_current_source = "editing"
+        # Capture the widget directly (sender() = the PlayerCellWidget that
+        # emitted play_requested — works for the main editing table AND for any
+        # Advanced-Duplicates accordion group table).
+        self._player_active_widget = self.sender()
         url = QUrl.fromLocalFile(os.path.abspath(filepath))
         self._player.setSource(url)
         self._player.play()
@@ -233,13 +246,15 @@ class MainWindow(QMainWindow):
         (whichever table it lives in)."""
         if not self._player_available:
             return
-        if self._player_current_row >= 0:
-            pw = self._get_active_player_widget()
-            if pw:
-                pw.set_playing(False)
+        # Use the direct widget reference first (always correct); fall back to
+        # the source-aware lookup only if the reference was lost.
+        pw = getattr(self, "_player_active_widget", None) or self._get_active_player_widget()
+        if pw:
+            pw.set_playing(False)
         self._player.stop()
         self._player_current_row = -1
         self._player_current_source = None
+        self._player_active_widget = None
 
     def _player_seek(self, position: int):
         """Seek to *position* (ms) AND resume playback from there.
@@ -262,18 +277,18 @@ class MainWindow(QMainWindow):
 
     def _on_player_position_changed(self, position: int):
         """Update the slider of the currently playing row."""
-        if not self._player_available or self._player_current_row < 0:
+        if not self._player_available:
             return
-        pw = self._get_active_player_widget()
+        pw = getattr(self, "_player_active_widget", None) or self._get_active_player_widget()
         if pw:
             duration = self._player.duration()
             pw.update_position(position, duration)
 
     def _on_player_state_changed(self, state):
         """Update play/pause button when playback state changes."""
-        if not self._player_available or self._player_current_row < 0:
+        if not self._player_available:
             return
-        pw = self._get_active_player_widget()
+        pw = getattr(self, "_player_active_widget", None) or self._get_active_player_widget()
         if not pw:
             return
 
