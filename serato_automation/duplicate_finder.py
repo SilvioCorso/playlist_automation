@@ -58,6 +58,21 @@ def _tokens(s: str) -> List[str]:
     return [t for t in s.split() if re.search(r"[a-z0-9]", t)]
 
 
+def _segments_normalized(raw_title: str) -> set:
+    """Split a RAW title on '-' and normalise each segment.
+
+    Returns the set of normalised segment strings (parentheticals stripped,
+    accents/mojibake repaired, lowercased). Used by rule 3: the accordion
+    string must EXACTLY equal one of these segments in every member's title.
+    """
+    segs = set()
+    for part in (raw_title or "").split("-"):
+        s = _dup_norm(part)
+        if s:
+            segs.add(s)
+    return segs
+
+
 def find_advanced_duplicates(
     tracks: List[LibraryTrack],
     min_similarity: int = 75,
@@ -115,7 +130,23 @@ def find_advanced_duplicates(
             if j == i:
                 continue
             nj = items[j][1]
-            if si == nj or si in nj or nj in si:
+            if si == nj:
+                union(i, j)  # identical normalised titles
+                continue
+            # Determine shorter / longer normalised title.
+            if len(si) <= len(nj):
+                short_norm, long_track = si, items[j][0]
+            else:
+                short_norm, long_track = nj, items[i][0]
+            long_norm = long_track and (nj if len(si) <= len(nj) else si)
+            # Rule 2 + Rule 3 at PAIR level: union only if the shorter title is
+            # a SUBSTRING of the longer AND is an EXACT dash-segment of the
+            # longer's raw title. This prevents 'my mind' unioning with
+            # 'on my mind' (substring yes, but 'my mind' is not an exact segment
+            # of 'on my mind' which splits to ['on my mind']) while still
+            # unioning 'On My Mind' with 'On My Mind - Diplo & SIDEPIECE'
+            # ('On My Mind' is an exact segment of the latter).
+            if short_norm in long_norm and short_norm in _segments_normalized(long_track.title):
                 union(i, j)
 
     # 4) Build clusters (>= 2 members).
@@ -137,6 +168,16 @@ def find_advanced_duplicates(
         # member's title. If some member does not contain it, the cluster is a
         # transitivity artefact -> discard it.
         if not all(rep_norm in items[m][1] for m in members):
+            continue
+
+        # Rule 3 — exact-segment match: the accordion string must EXACTLY equal
+        # one of the dash-separated segments of EVERY member's title. This
+        # rejects 'my mind' clustering with 'on my mind' / 'take my mind': the
+        # titles split to ['on my mind'] / ['take my mind'], and 'my mind' is
+        # not an exact segment of either. It KEEPS 'On My Mind' with
+        # 'On My Mind - Diplo & SIDEPIECE' (splits to ['On My Mind', 'Diplo &
+        # SIDEPIECE'] -> 'On My Mind' is an exact segment).
+        if not all(rep_norm in _segments_normalized(items[m][0].title) for m in members):
             continue
 
         # Step 1 — artist-name exclusion: if the accordion string matches the
