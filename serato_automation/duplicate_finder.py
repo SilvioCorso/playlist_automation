@@ -130,22 +130,38 @@ def find_advanced_duplicates(
     if n < 2:
         return []
 
-    # 2) A segment is a "song-title key" when it is the LONGEST segment of at
-    #    least one track. Only these segments can trigger clustering — the
-    #    artist segment (shorter than the song title) never qualifies.
+    # 2) Step 1 — artist-name exclusion.
+    #    A segment that coincides EXACTLY (normalised) with the artist of ANY
+    #    track that contains it is an ARTIST NAME, not a song title. Such
+    #    segments are NEVER treated as song keys -> they don't drive clustering
+    #    (an artist must not unite different songs, and a group whose title
+    #    would be the artist is not reported as a duplicate).
+    all_inv: Dict[str, List[int]] = defaultdict(list)
+    for i, (_t, _nt, segs, _longest) in enumerate(items):
+        for _r, norm in segs:
+            all_inv[norm].append(i)
+    artist_segments: set = set()
+    for s, idxs in all_inv.items():
+        for i in idxs:
+            if _dup_norm(items[i][0].artist or "") == s:
+                artist_segments.add(s)
+                break
+
+    # 3) A segment is a "song-title key" when it is the LONGEST segment of at
+    #    least one track AND it is not an artist-name segment.
     song_keys: set = set()
     for _t, _nt, _segs, longest in items:
-        if longest is not None:
-            song_keys.add(longest[1])  # normalized form is the key
+        if longest is not None and longest[1] not in artist_segments:
+            song_keys.add(longest[1])
 
-    # 3) Inverted index: normalized song-key segment -> list of item indices.
+    # 4) Inverted index: normalized song-key segment -> list of item indices.
     inv: Dict[str, List[int]] = defaultdict(list)
     for i, (_t, _nt, segs, _longest) in enumerate(items):
         for _r, norm in segs:
             if norm in song_keys:
                 inv[norm].append(i)
 
-    # 4) Union-find; union tracks that share a song-key segment.
+    # 5) Union-find; union tracks that share a song-key segment.
     parent = list(range(n))
 
     def find(x: int) -> int:
@@ -182,6 +198,17 @@ def find_advanced_duplicates(
         for m in members:
             seg_count[items[m][3][1]] += 1
         defining_norm = max(seg_count, key=seg_count.get)
+
+        # --- Step 1: artist-name exclusion -------------------------------
+        # If the defining segment (the accordion title) coincides EXACTLY with
+        # any track's artist (normalised), the group is keyed on an ARTIST name,
+        # not a song title -> skip it. The goal is song duplicates, not artist
+        # duplicates (e.g. an "Vasco Rossi" accordion where every row's artist is
+        # "Vasco Rossi" must NOT be reported).
+        artist_norms = {_dup_norm(items[m][0].artist or "") for m in members}
+        artist_norms.discard("")
+        if defining_norm in artist_norms:
+            continue
 
         # Pick the raw form of the defining segment: the SHORTEST raw among
         # members that have it, with trailing parentheticals stripped.
