@@ -10,6 +10,7 @@ config.json
 title_locks.json
 library_cache_*.pkl
 serato_debug.log
+launch_error.log
 *.paths.log
 
 # === Python ===

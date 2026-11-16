@@ -268,17 +268,83 @@ def _bootstrap():
 
 
 # ---------------------------------------------------------------------------
+# App launch (subprocess-based so a startup crash is diagnosable)
+# ---------------------------------------------------------------------------
+
+def _launch_app(venv_py):
+    """Run main.py with the venv Python.
+
+    On Windows os.execv does NOT replace the process — it spawns a child and
+    exits the parent immediately, so if main.py crashed at startup the error
+    vanished silently (pythonw.exe has no console). We instead run main.py as
+    a short-lived watched subprocess: if it exits within a few seconds we treat
+    that as a startup crash, read the captured traceback from launch_error.log
+    and show it to the user. If it survives >3 s the GUI is up and we exit the
+    launcher cleanly (no lingering pythonw.exe for the whole session).
+    """
+    main_py = os.path.join(_PROJECT_ROOT, "main.py")
+    err_log = os.path.join(_PROJECT_ROOT, "launch_error.log")
+    try:
+        log_fh = open(err_log, "w", encoding="utf-8")
+    except Exception:
+        log_fh = subprocess.DEVNULL
+    try:
+        proc = subprocess.Popen(
+            [venv_py, main_py],
+            cwd=_PROJECT_ROOT,
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    except Exception as e:
+        _msg_box(
+            "Impossibile avviare l'applicazione.\n\n"
+            f"Dettagli: {e}",
+            title="Errore di avvio", kind="error",
+        )
+        return
+    # Watch briefly: a startup crash happens fast; if still alive after 3 s,
+    # the GUI launched successfully — exit the launcher cleanly.
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        sys.exit(0)  # app is running — launcher done.
+    # Process exited within 3 s → almost certainly a startup crash.
+    rc = proc.returncode
+    if rc == 0:
+        sys.exit(0)  # clean immediate exit (rare but valid).
+    # Read back whatever the child wrote (traceback + INFO logs).
+    detail = ""
+    try:
+        with open(err_log, "r", encoding="utf-8", errors="replace") as f:
+            detail = f.read()
+    except Exception:
+        pass
+    # Keep only the tail (the traceback) — INFO logs above are noise here.
+    tail = detail.strip().splitlines()
+    tail_text = "\n".join(tail[-25:]) if tail else "(nessun output)"
+    _msg_box(
+        "L'applicazione si è chiusa in modo imprevisto all'avvio.\n\n"
+        f"Exit code: {rc}\n\n"
+        f"{tail_text}\n\n"
+        f"Log completo salvato in:\n{err_log}",
+        title="Errore di avvio", kind="error",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main():
     # Fast path: virtualenv already exists and bootstrap completed.
     if os.path.exists(_BOOTSTRAP_MARKER) and os.path.exists(_VENV_PY):
-        # Sanity-check that the venv actually has PySide6 (marker could be stale
-        # if the user manually deleted venv\Lib\site-packages\PySide6).
+        # Sanity-check that the venv actually has the core deps (marker could
+        # be stale if the user deleted site-packages, or pulled a version that
+        # added a new core dep like certifi/send2trash).
         try:
             check = subprocess.run(
-                [_VENV_PY, "-c", "import PySide6, rapidfuzz, mutagen"],
+                [_VENV_PY, "-c", "import PySide6, rapidfuzz, mutagen, certifi, send2trash"],
                 capture_output=True, timeout=15,
             )
             venv_ready = (check.returncode == 0)
@@ -286,19 +352,15 @@ def main():
             venv_ready = False
 
         if venv_ready:
-            # Relaunch the app with the venv Python so all dependencies are found.
-            os.execv(_VENV_PY, [_VENV_PY, os.path.join(_PROJECT_ROOT, "main.py")])
-            return  # not reached
+            _launch_app(_VENV_PY)
+            return
         # else: marker is stale, fall through to full bootstrap
 
     venv_py = _bootstrap()
     if not venv_py:
         sys.exit(1)
 
-    # Relaunch main.py with the venv Python.
-    # We use os.execv so the child replaces this process — clean exit when
-    # the user closes the app, no leftover pythonw.exe.
-    os.execv(venv_py, [venv_py, os.path.join(_PROJECT_ROOT, "main.py")])
+    _launch_app(venv_py)
 
 
 if __name__ == "__main__":
