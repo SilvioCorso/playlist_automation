@@ -262,14 +262,27 @@ class MainWindow(QMainWindow):
         Clicking the slider groove (mid-bar) must both reposition to the right
         second AND play — 'se clicco a metà della barretta deve posizionarmi e
         riprodurre'. If a track is loaded we always resume after setPosition so
-        the DJ hears the audio from the clicked point. If nothing is loaded
-        (no active row), do nothing.
+        the DJ hears the audio from the clicked point.
+
+        Safety mapping: if the slider range was not yet set to the real track
+        duration (still the default 0..1000, which happens when duration()
+        arrived late), the incoming *position* is in 0..1000 — we map it
+        proportionally to 0..duration so the seek lands at the right second,
+        and fix the slider range so future clicks are correct.
         """
         if not self._player_available:
             return
         if self._player_current_row < 0:
             return
-        # setPosition works in Playing/Paused/Stopped as long as a source is set.
+        duration = self._player.duration()
+        pw = getattr(self, "_player_active_widget", None) or self._get_active_player_widget()
+        if pw and duration > 0:
+            smax = pw.slider.maximum()
+            if 0 < smax < duration:
+                # slider range is the default (1000), not the real duration:
+                # map the click proportionally and fix the range.
+                position = int(position * duration / smax)
+                pw.update_position(self._player.position(), duration)
         self._player.setPosition(position)
         # Resume from the new position unless we're already playing.
         if self._player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:

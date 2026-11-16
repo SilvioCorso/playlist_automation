@@ -1,122 +1,151 @@
 # Serato Playlist Automation
-# Advanced duplicate finder — segment-based title clustering with similarity.
+# Advanced duplicate finder — longest-segment title clustering.
 #
-# Two titles are duplicates when they share the same SONG-TITLE SEGMENT,
-# where a segment is the part of the title between " - " separators (after
-# normalize_string has stripped parentheticals / accents / mojibake). The dash
-# almost always separates the song title from an artist or detail that we want
-# to IGNORE for duplicate detection.
+# Two tracks are duplicates when they share the SONG-TITLE SEGMENT, where the
+# song-title segment is the LONGEST segment (by token count) of the title after
+# splitting on " - " and normalising (parentheticals / accents / mojibake
+# stripped). The artist / detail segment is almost always SHORTER than the song
+# title segment, so it is never the longest and never triggers clustering.
 #
-# CRUCIAL — artist exclusion: an artist name appears as a segment in EVERY
-# track by that artist ("Depeche Mode - Precious", "Depeche Mode - Enjoy the
-# Silence", ...) so all 25 Depeche Mode songs shared the segment "depeche mode"
-# and were wrongly clustered into one 25-track group. The fix: a segment is
-# only usable for clustering when it is RARE — i.e. it co-occurs with FEW
-# distinct other segments. The artist segment co-occurs with many different
-# song titles (one per song) so it is flagged common and skipped; the
-# song-title segment co-occurs with few (remix/descriptor variants of the SAME
-# song) so it is kept.
+# This fixes the artist over-clustering that defeated the rarity filter:
+# "Eiffel 65 - Move Your Body", "Eiffel 65 - Blue", "Eiffel 65 - Enjoy the
+# Silence" all shared the segment "eiffel 65" (the artist, 2 tokens) and were
+# wrongly collapsed into one 18-track group. With the longest-segment rule:
+#   "Eiffel 65 - Move Your Body"  longest seg = "move your body" (3 tok)
+#   "Eiffel 65 - Blue"            longest seg = "blue" (1 tok -> dropped)
+#   -> they share NO longest segment -> NOT clustered.
+#   "Move Your Body (128kbit)"    longest seg = "move your body" (3 tok)
+#   -> shares "move your body" with the Eiffel track -> CLUSTER (same song).
 #
-# Examples:
-#   CLUSTER (same song, share the rare song-title segment):
-#     "On My Mind"                      segs: {on my mind}
-#     "On My Mind (MK Remix)"           segs: {on my mind}
-#     "On My Mind - Diplo & SIDEPIECE"  segs: {on my mind, diplo sidepiece}
-#       -> share "on my mind" (rare) -> CLUSTER
-#   DO NOT CLUSTER (different songs, only share the common artist segment):
-#     "Depeche Mode - Precious"            segs: {depeche mode*, precious}
-#     "Depeche Mode - Enjoy the Silence"   segs: {depeche mode*, enjoy the silence}
-#       -> only shared segment is "depeche mode" (common -> artist) -> NO CLUSTER
+# "On My Mind" / "On My Mind (MK Remix)" / "On My Mind - Diplo & SIDEPIECE"
+# all have "on my mind" as their longest segment -> CLUSTER.
+# "my mind" / "on my mind" / "take my mind" have DIFFERENT longest segments
+# ("my mind", "on my mind", "take my mind") -> NOT clustered.
 #
-# Single-token segments ("Love", "Batman") are excluded — a one-word title is
-# too generic to be a duplicate signal.
+# Single-token segments are dropped (a one-word title like "Love" is too
+# generic). When a track's longest segment has < 2 tokens it can't cluster.
 
 from collections import defaultdict
-from typing import Dict, List, Tuple
+import re
+import unicodedata
+from typing import Dict, List, Optional, Tuple
 
-from .library_reader import LibraryTrack, normalize_string
+from .library_reader import LibraryTrack, normalize_string, repair_mojibake
 
 import logging
 logger = logging.getLogger("serato.dupfinder")
 
-MIN_TOKENS = 2          # a segment needs >= this many tokens to be a key
-MAX_CO_SEGMENTS = 8     # a segment co-occurring with > this many distinct other
-                        # segments is an artist / common name, not a song title
+MIN_TOKENS = 2
+_PAREN_RE = re.compile(r"\s*\([^)]*\)")
+_PARENS_RE = re.compile(r"[()]")
+
+
+def _dup_norm(s: str) -> str:
+    """Normalise a title segment for duplicate matching.
+
+    Lowercase, repair mojibake, strip accents, underscores -> spaces. Then
+    strip parentheticals — BUT if the result has fewer than MIN_TOKENS tokens
+    (e.g. 'Blue (Da Ba Dee)' -> 'blue', 1 token), retry keeping the parenthetical
+    content ('blue da ba dee', 4 tokens) so the song title is not lost and the
+    artist segment does not become the longest.
+    """
+    s = s.lower()
+    try:
+        s = repair_mojibake(s)
+    except Exception:
+        pass
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+    s = s.replace("_", " ")
+
+    stripped = _PAREN_RE.sub("", s)
+    stripped = re.sub(r"\s+", " ", stripped).strip()
+    toks = [t for t in stripped.split() if re.search(r"[a-z0-9]", t)]
+    if len(toks) >= MIN_TOKENS:
+        return stripped
+    # Too short after stripping parentheticals — keep the parenthetical content
+    # (just remove the bracket characters themselves).
+    kept = _PARENS_RE.sub("", s)
+    kept = re.sub(r"\s+", " ", kept).strip()
+    return kept
 
 
 def _segment_tokens(seg: str) -> set:
     """Tokens of a segment (drops pure-punctuation tokens like '-')."""
-    import re
     return {t for t in seg.split() if re.search(r"[a-z0-9]", t)}
 
 
 def _title_segments(raw_title: str) -> List[Tuple[str, str]]:
     """Split a RAW title on ' - ' and normalise each segment.
 
-    Returns a list of (raw_segment, normalized_segment) for segments that have
-    at least MIN_TOKENS tokens. The split MUST happen before normalisation
-    (normalize_string strips dashes, so splitting the normalised string would
-    merge artist and title into one segment).
+    Returns (raw_segment, normalized_segment) pairs for segments with at least
+    MIN_TOKENS tokens. The split happens BEFORE normalisation because the dash
+    would otherwise be lost. Uses _dup_norm (adaptive parenthetical stripping)
+    instead of normalize_string so a title like 'Blue (Da Ba Dee)' keeps its
+    subtitle instead of collapsing to a single token.
     """
     out = []
     for raw in raw_title.split(" - "):
-        norm = normalize_string(raw).strip()
+        norm = _dup_norm(raw)
         if norm and len(_segment_tokens(norm)) >= MIN_TOKENS:
             out.append((raw.strip(), norm))
     return out
+
+
+def _longest_segment(segs: List[Tuple[str, str]]) -> Optional[Tuple[str, str]]:
+    """Return the (raw, norm) segment with the most tokens; tie-break by length."""
+    if not segs:
+        return None
+    return max(segs, key=lambda rs: (len(_segment_tokens(rs[1])), len(rs[1])))
 
 
 def find_advanced_duplicates(
     tracks: List[LibraryTrack],
     min_similarity: int = 75,
 ) -> List[Dict]:
-    """Cluster *tracks* that share a rare song-title segment.
+    """Cluster *tracks* that share a song-title (longest) segment.
 
     Returns a list of groups, each::
         {
           "representative_title": str,
           "count": int,
-          "tracks": [(LibraryTrack, int)],  # (track, vicinanza_pct to rep)
+          "tracks": [(LibraryTrack, int)],
         }
     Groups have >= 2 members, sorted by count desc then title.
     """
-    # 1) Segment each title (split on ' - ' BEFORE normalising).
-    items: List[Tuple[LibraryTrack, str, List[str], Dict[str, str]]] = []
+    # 1) Segment each title; compute its longest segment (the song title).
+    items: List[Tuple[LibraryTrack, str, List[Tuple[str, str]], Optional[Tuple[str, str]]]] = []
     for t in tracks:
         raw = (t.title or "").strip()
         if not raw:
             continue
-        seg_pairs = _title_segments(raw)
-        if not seg_pairs:
-            continue  # no >=2-token segment (e.g. "Love") -> can't cluster
-        norm_segs = [n for _r, n in seg_pairs]
-        raw_map = {n: r for r, n in seg_pairs}
+        segs = _title_segments(raw)
+        if not segs:
+            continue
+        longest = _longest_segment(segs)
+        if longest is None:
+            continue
         nt = normalize_string(raw).strip()
-        items.append((t, nt, norm_segs, raw_map))
+        items.append((t, nt, segs, longest))
     n = len(items)
     if n < 2:
         return []
 
-    # 2) Inverted index: normalized segment -> list of item indices.
+    # 2) A segment is a "song-title key" when it is the LONGEST segment of at
+    #    least one track. Only these segments can trigger clustering — the
+    #    artist segment (shorter than the song title) never qualifies.
+    song_keys: set = set()
+    for _t, _nt, _segs, longest in items:
+        if longest is not None:
+            song_keys.add(longest[1])  # normalized form is the key
+
+    # 3) Inverted index: normalized song-key segment -> list of item indices.
     inv: Dict[str, List[int]] = defaultdict(list)
-    for i, (_t, _nt, segs, _rm) in enumerate(items):
-        for s in set(segs):
-            inv[s].append(i)
+    for i, (_t, _nt, segs, _longest) in enumerate(items):
+        for _r, norm in segs:
+            if norm in song_keys:
+                inv[norm].append(i)
 
-    # 3) Rarity filter: a segment is an ARTIST / common name if the tracks that
-    #    contain it co-occur with MANY distinct OTHER segments (i.e. the segment
-    #    does not pin down a single song — it's shared across different songs).
-    #    Such segments are excluded from clustering.
-    song_like: Dict[str, bool] = {}
-    for s, idxs in inv.items():
-        co = set()
-        for i in idxs:
-            for s2 in items[i][2]:
-                if s2 != s:
-                    co.add(s2)
-        song_like[s] = len(co) <= MAX_CO_SEGMENTS
-
-    # 4) Union-find; union tracks that share a song-like segment.
+    # 4) Union-find; union tracks that share a song-key segment.
     parent = list(range(n))
 
     def find(x: int) -> int:
@@ -130,21 +159,12 @@ def find_advanced_duplicates(
         if ra != rb:
             parent[ra] = rb
 
-    # shared_song_like[a] = set of song-like segments a has (for rep scoring)
-    shared_song_like: Dict[int, set] = {i: {s for s in items[i][2] if song_like.get(s)}
-                                        for i in range(n)}
-    pair_shared: Dict[int, set] = defaultdict(set)  # for scoring (not all pairs)
-
-    for s, idxs in inv.items():
-        if not song_like.get(s):
-            continue  # artist / common — skip
+    for seg, idxs in inv.items():
         if len(idxs) < 2:
             continue
         base = idxs[0]
         for other in idxs[1:]:
             union(base, other)
-            pair_shared[base].add(s)
-            pair_shared[other].add(s)
 
     # 5) Build clusters (>= 2 members).
     clusters: Dict[int, List[int]] = defaultdict(list)
@@ -155,57 +175,38 @@ def find_advanced_duplicates(
     for members in clusters.values():
         if len(members) < 2:
             continue
-        # Defining segment = the song-like segment shared by the most members.
-        seg_member_count: Dict[str, int] = defaultdict(int)
+        # Representative = the member whose longest segment is shared by the
+        # most other members (the defining song title). Fall back to the
+        # member with the shortest full title.
+        seg_count: Dict[str, int] = defaultdict(int)
         for m in members:
-            for s in shared_song_like[m]:
-                seg_member_count[s] += 1
-        if seg_member_count:
-            defining = max(seg_member_count, key=seg_member_count.get)
-        else:
-            defining = None
+            seg_count[items[m][3][1]] += 1
+        defining_norm = max(seg_count, key=seg_count.get)
 
-        # Representative = member with the fewest segments + shortest title
-        # (the cleanest "song title"). Its title is used for the accordion
-        # header, falling back to the defining segment's raw form.
-        def _key(m):
-            return (len(items[m][2]), len(items[m][1]))
-        rep = min(members, key=_key)
-        rep_track = items[rep][0]
-
-        if defining and defining in items[rep][3]:
-            rep_title = items[rep][3][defining]
-        elif defining:
-            # use the raw form of the defining segment from any member
-            rep_title = defining
-            for m in members:
-                if defining in items[m][3]:
-                    rep_title = items[m][3][defining]
+        # Pick the raw form of the defining segment: the SHORTEST raw among
+        # members that have it, with trailing parentheticals stripped.
+        import re as _re
+        raws = []
+        for m in members:
+            for r, norm in items[m][2]:
+                if norm == defining_norm:
+                    cleaned = _re.sub(r"\s*\([^)]*\)", "", r).strip() or r
+                    raws.append(cleaned)
                     break
-        else:
-            rep_title = rep_track.title or ""
+        rep_title = min(raws, key=len) if raws else items[members[0]][0].title or ""
 
-        # Clean the display title: pick the SHORTEST raw form of the defining
-        # segment among members (a version without extra descriptors is cleaner)
-        # and strip trailing parentheticals like "(v2)" / "(Remix)" so the
-        # accordion header shows the bare song title.
-        if defining:
-            raws = [items[m][3][defining] for m in members if defining in items[m][3]]
-            if raws:
-                import re as _re
-                cleaned = [_re.sub(r"\s*\([^)]*\)", "", r).strip() or r for r in raws]
-                rep_title = min(cleaned, key=len)
+        rep = min(members, key=lambda m: (len(items[m][1]), len(items[m][2])))
+        rep_norm = items[rep][1]
+        rep_longest_norm = items[rep][3][1]
 
         members_scored: List[Tuple[LibraryTrack, int]] = []
-        rep_norm = items[rep][1]
-        rep_sls = shared_song_like[rep]
         for m in members:
             t = items[m][0]
             if m == rep:
                 score = 100
             elif items[m][1] == rep_norm:
                 score = 100
-            elif rep_sls & shared_song_like[m]:
+            elif items[m][3][1] == rep_longest_norm:
                 score = 95
             else:
                 score = 85

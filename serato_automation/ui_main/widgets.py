@@ -447,16 +447,18 @@ class PlayerCellWidget(QWidget):
             set_button_alt(self.btn_play, "player_play_pause")
 
     def update_position(self, position_ms: int, duration_ms: int):
-        """Update slider from QMediaPlayer position."""
-        if duration_ms > 0:
-            self.slider.blockSignals(True)
-            self.slider.setRange(0, duration_ms)
-            self.slider.setValue(position_ms)
-            self.slider.blockSignals(False)
-        else:
-            self.slider.blockSignals(True)
-            self.slider.setValue(0)
-            self.slider.blockSignals(False)
+        """Update slider from QMediaPlayer position.
+
+        If duration is not yet known (0), do NOTHING — leaving the slider range
+        and value untouched. Resetting the value to 0 here would clobber a
+        previously-set range and make seek clicks map wrong until the real
+        duration arrives (via durationChanged)."""
+        if duration_ms <= 0:
+            return
+        self.slider.blockSignals(True)
+        self.slider.setRange(0, duration_ms)
+        self.slider.setValue(position_ms)
+        self.slider.blockSignals(False)
 
     def reset(self):
         """Reset to initial state (no file)."""
