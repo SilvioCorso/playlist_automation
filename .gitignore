@@ -53,6 +53,9 @@ desktop.ini
 *.bak_*
 
 # === Stray dev scratch files ===
-_*.py
-_*.txt
+# (NOTE: do NOT use "_*.py" here — that glob also matches "__init__.py"
+#  because fnmatch("_init_") satisfies the "*" — and would silently keep
+#  Python package init files out of the repo. List stray files explicitly.)
 ggg
+_gen_i18n_locales.py
+_it_check.txt
