@@ -74,6 +74,9 @@ class MainWindow(QMainWindow):
         # Constructed defensively: on Windows Server / RDP sessions without
         # audio, or machines with the audio service disabled, QAudioOutput can
         # fail. We degrade gracefully (player column disabled) instead of crashing.
+        # NOTE: errorOccurred is connected in its own try/except so a PySide6
+        # version without that signal (or a signature change) does NOT disable
+        # the whole player — playback/seek/position must keep working.
         self._player_available = False
         self._player_current_row = -1
         # Which table owns the playing row: "results" | "editing" | None.
@@ -84,9 +87,16 @@ class MainWindow(QMainWindow):
             self._audio_output = QAudioOutput(self)
             self._player.setAudioOutput(self._audio_output)
             self._audio_output.setVolume(0.7)
-            self._player.errorOccurred.connect(self._on_player_error)
             self._player.positionChanged.connect(self._on_player_position_changed)
             self._player.playbackStateChanged.connect(self._on_player_state_changed)
+            try:
+                self._player.durationChanged.connect(self._on_player_duration_changed)
+            except Exception:
+                pass  # older Qt: no durationChanged — positionChanged carries duration
+            try:
+                self._player.errorOccurred.connect(self._on_player_error)
+            except Exception:
+                pass  # signal absent on some PySide6 builds — non-fatal
             self._player_available = True
         except Exception as e:
             self._logger.warning("Audio player non disponibile: %s", e)
@@ -106,23 +116,51 @@ class MainWindow(QMainWindow):
         """Handle QMediaPlayer errors without crashing — log and keep going."""
         self._logger.warning("QMediaPlayer error: %s (%s)", error_string, error)
 
+    def _on_player_duration_changed(self, duration):
+        """Media duration became known (may arrive AFTER playback starts on
+        Windows). Force the active row's slider range to the real duration so
+        seek-clicks map to the right position and the bar reflects track length.
+        """
+        if not self._player_available or duration <= 0:
+            return
+        pw = self._get_active_player_widget()
+        if pw:
+            pw.update_position(self._player.position(), duration)
+
     def _get_active_player_widget(self):
         """Return the PlayerCellWidget for the row currently playing.
 
         The active row may live in the Results table OR the Editing table
         (self._player_current_source tells us which). Centralising this lookup
         keeps the shared QMediaPlayer in sync across both tables.
+
+        Fallback: if the source-aware lookup misses (e.g. source flag out of
+        sync after an edge case), scan both tables at the current row before
+        giving up — so state/position updates always reach the widget that's
+        actually playing.
         """
-        if self._player_current_row < 0:
+        from serato_automation.ui_main.widgets import PlayerCellWidget
+        row = self._player_current_row
+        if row < 0:
             return None
-        if self._player_current_source == "editing":
-            if not hasattr(self, "editing_table"):
-                return None
-            w = self.editing_table.cellWidget(self._player_current_row, E_COL_PLAYER)
-            from serato_automation.ui_main.widgets import PlayerCellWidget
-            return w if isinstance(w, PlayerCellWidget) else None
-        # default / "results"
-        return self.results_table.get_player_widget(self._player_current_row)
+        src = self._player_current_source
+        if src == "editing" and hasattr(self, "editing_table"):
+            w = self.editing_table.cellWidget(row, E_COL_PLAYER)
+            if isinstance(w, PlayerCellWidget):
+                return w
+        elif src == "results":
+            w = self.results_table.get_player_widget(row)
+            if w:
+                return w
+        # Fallback scan: try results first, then editing.
+        w = self.results_table.get_player_widget(row)
+        if w:
+            return w
+        if hasattr(self, "editing_table"):
+            w = self.editing_table.cellWidget(row, E_COL_PLAYER)
+            if isinstance(w, PlayerCellWidget):
+                return w
+        return None
 
     def _player_play_row(self, row: int):
         """Play audio for the given RESULTS-table row — stop previous first."""
@@ -204,21 +242,23 @@ class MainWindow(QMainWindow):
         self._player_current_source = None
 
     def _player_seek(self, position: int):
-        """Seek to the given position (ms) in the current track.
+        """Seek to *position* (ms) AND resume playback from there.
 
-        Accepts the seek in any playback state (Playing, Paused, Stopped).
-        If the player is currently Stopped (no source loaded yet, or finished),
-        we still apply the position because the media may already be loaded —
-        Qt will honour setPosition() and resume from there on next play().
+        Clicking the slider groove (mid-bar) must both reposition to the right
+        second AND play — 'se clicco a metà della barretta deve posizionarmi e
+        riprodurre'. If a track is loaded we always resume after setPosition so
+        the DJ hears the audio from the clicked point. If nothing is loaded
+        (no active row), do nothing.
         """
         if not self._player_available:
             return
-        # Only seek if there is an active row AND a media source is loaded.
-        # (We can't seek when nothing is loaded.)
         if self._player_current_row < 0:
             return
-        # setPosition works in Playing/Paused/Stopped as long as a source is set
+        # setPosition works in Playing/Paused/Stopped as long as a source is set.
         self._player.setPosition(position)
+        # Resume from the new position unless we're already playing.
+        if self._player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+            self._player.play()
 
     def _on_player_position_changed(self, position: int):
         """Update the slider of the currently playing row."""
@@ -987,6 +1027,25 @@ class MainWindow(QMainWindow):
         self.editing_table.setColumnWidth(E_COL_PLAYER, 141)
         self._editing_sort = (None, True)
 
+        # Restore saved column widths (user resizing persists across launches).
+        self._restoring_editing_cols = True
+        try:
+            saved_w = (self.config.get("editing_table_columns") or {}).get("widths") or {}
+            for col_str, w in saved_w.items():
+                try:
+                    col = int(col_str)
+                    if 0 <= col < E_NUM_COLS and int(w) > 10:
+                        self.editing_table.setColumnWidth(col, int(w))
+                except (ValueError, TypeError):
+                    continue
+        finally:
+            self._restoring_editing_cols = False
+        # Debounced save on resize — same pattern as the Results table.
+        self._editing_cols_timer = QTimer(self)
+        self._editing_cols_timer.setSingleShot(True)
+        self._editing_cols_timer.timeout.connect(self._save_editing_column_layout)
+        hh.sectionResized.connect(lambda *_: self._schedule_save_editing_columns())
+
         # Stacked container: page 0 = the flat editing table (used by Easy
         # Duplicates / Clean Library / Find Differences); page 1 = the Advanced
         # Duplicates accordion (one collapsible group per fuzzy title cluster).
@@ -1021,6 +1080,27 @@ class MainWindow(QMainWindow):
             tr("edit_col_delete"),
             tr("edit_col_player"),
         ]
+
+    def _schedule_save_editing_columns(self, *_args):
+        if getattr(self, "_restoring_editing_cols", False):
+            return
+        if hasattr(self, "_editing_cols_timer"):
+            self._editing_cols_timer.start(250)
+
+    def _save_editing_column_layout(self):
+        """Persist the editing-table column widths so the user's resizing
+        survives across launches (same UX as the Results table)."""
+        if getattr(self, "_restoring_editing_cols", False):
+            return
+        if not hasattr(self, "editing_table"):
+            return
+        header = self.editing_table.horizontalHeader()
+        widths = {str(c): header.sectionSize(c) for c in range(E_NUM_COLS)}
+        self.config["editing_table_columns"] = {"widths": widths}
+        try:
+            save_config(self.config)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Startup
@@ -2940,6 +3020,8 @@ class MainWindow(QMainWindow):
             self.config["music_folder"] = mf
         if hasattr(self, "results_table"):
             self.results_table._save_column_layout()
+        if hasattr(self, "editing_table"):
+            self._save_editing_column_layout()
         save_config(self.config)
         # Ensure title locks are saved before closing
         self._save_title_locks()

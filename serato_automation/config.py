@@ -50,6 +50,9 @@ DEFAULT_CONFIG = {
         "order": [],
         "widths": {},
     },
+    "editing_table_columns": {
+        "widths": {},
+    },
     "table_fit_columns": False,
     "license_pro": False,          # placeholder — set True when licensing backend validates
 }
