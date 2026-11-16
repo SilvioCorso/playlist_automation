@@ -1,4 +1,4 @@
-# Architettura tecnica — Serato Playlist Automation v4.2
+# Architettura tecnica — Serato Playlist Automation v4.5
 
 Documento per sviluppatori e AI che estendono il codebase.
 
@@ -53,7 +53,7 @@ flowchart LR
 | `crate_writer.py` | `CrateWriter` | Binary Serato crate TLV |
 | `report_generator.py` | `ReportGenerator` | TXT mancanti / summary |
 | `log_handler.py` | `setup_logging` | File + console log |
-| `ui_main.py` | `MainWindow`, `ResultsTable`, workers Qt | Tutta l'UI |
+| `ui_main/` (package) | `MainWindow`, `ResultsTable`, workers Qt, dialogs | Tutta l'UI (v4.5: ex-monolite) |
 
 ---
 
@@ -69,7 +69,7 @@ flowchart LR
 
 ---
 
-## ui_main.py — classi UI rilevanti
+## ui_main/ — classi UI rilevanti (v4.5: package, ex `ui_main.py`)
 
 ```
 ClickableSlider(QSlider)       # click groove → seek
@@ -130,7 +130,7 @@ Lock paths (priorità):
 | Nuovo formato playlist | `playlist_parser.py` |
 | Nuova sorgente import | `playlist_importer.py` |
 | Regola scoring | `track_matcher.py` post-rules |
-| Nuova colonna tabella | `ui_main.py` COL_* + `_populate_row` |
+| Nuova colonna tabella | `ui_main/constants.py` COL_* + `ui_main/results_table.py` `_populate_row` |
 | Export verso altro DJ sw | nuovo modulo + bottone in toolbar |
 
 ---
@@ -149,6 +149,6 @@ Opzionale dev: `python-docx` (solo generazione docs, non runtime app).
 
 ## Versioning
 
-Storico completo nei commenti header di `ui_main.py` (v2.5 → v4.2). Ogni release bumpa almeno:
-- `ui_main.py` header + window title + log avvio
+Storico completo nei commenti header dei sottomoduli `ui_main/` (v2.5 → v4.5). Ogni release bumpa almeno:
+- `ui_main/main_window.py` header + window title + log avvio
 - `main.py` banner console

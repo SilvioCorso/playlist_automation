@@ -1,5 +1,56 @@
-serato_automation/__pycache__/
+# =====================================================================
+# Serato Playlist Automation — .gitignore
+# Comprehensive: user state, Python, build artifacts, IDE, OS, Serato.
+# NOTE: docs/ is intentionally NOT ignored — documentation preserves
+# project context for future AI sessions and contributors.
+# =====================================================================
+
+# === User runtime state — NEVER commit (contains personal paths / data) ===
+config.json
+title_locks.json
+library_cache_*.pkl
 serato_debug.log
-venv/
+*.paths.log
+
+# === Python ===
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+venv/
+.venv/
+env/
+.bootstrap_done
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# === Build / packaging artifacts ===
+dist/
+build/
+*.spec
+*.exe
+
+# === IDE / Editor ===
+*.iml
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# === OS ===
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# === Serato backup files (created by serato_database.py on write) ===
+*.bak_*
+
+# === Stray dev scratch files ===
+_*.py
+_*.txt
+ggg

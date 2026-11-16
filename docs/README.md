@@ -1,9 +1,9 @@
-# Documentazione — Serato Playlist Automation v4.4
+# Documentazione — Serato Playlist Automation v4.5
 
 | File | Pubblico | Descrizione |
 |------|----------|-------------|
 | [contesto.md](./contesto.md) | Sviluppatore / AI | **⭐ Contesto completo — leggi per prima cosa in ogni nuova sessione** |
-| [documentazione_tecnica.md](./documentazione_tecnica.md) | Sviluppatore | Architettura, moduli, layout UI v4.4, config, pattern |
+| [documentazione_tecnica.md](./documentazione_tecnica.md) | Sviluppatore | Architettura, moduli, layout UI v4.5, config, pattern |
 | [architettura_tecnica.md](./architettura_tecnica.md) | Sviluppatore | Diagramma flusso dati, threading, classi UI |
 | [prompt_next_ia.md](./prompt_next_ia.md) | Sviluppatore / AI | Blocco prompt copia-incolla per nuove sessioni |
 | [roadmap_miglioramenti.md](./roadmap_miglioramenti.md) | Product / Dev | Proposte future e sprint consigliati |
@@ -13,7 +13,7 @@
 | [articolo_blog.md](./articolo_blog.md) | Marketing | Template articolo blog |
 
 - **Nuova sessione AI?** Leggi `contesto.md` + `prompt_next_ia.md`
-- **Versione documentata:** v4.4
+- **Versione documentata:** v4.5
 
 Indice dei file in questa cartella.
 

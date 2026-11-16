@@ -542,11 +542,16 @@ class TrackMatcher:
     # ---------------------------------------------------------------
 
     def match_playlist(
-        self, tracks: List[PlaylistTrack], progress_callback=None
+        self, tracks: List[PlaylistTrack], progress_callback=None,
+        cancel_check=None,
     ) -> List[MatchResult]:
         """Match an entire playlist. Returns one MatchResult per track."""
         results: List[MatchResult] = []
         for i, track in enumerate(tracks):
+            # Cooperative cancellation — checked before each track.
+            if cancel_check and cancel_check():
+                logger.info("Matching annullato dall'utente: %d/%d brani elaborati", i, len(tracks))
+                break
             result = self._match_with_candidates(track)
             results.append(result)
 
@@ -1354,7 +1359,8 @@ class TrackMatcher:
                         query_key, self._lib_keys, scorer=scorer,
                         limit=MAX_CANDIDATES + 5,
                     )
-                except Exception:
+                except Exception as e:
+                    logger.warning("rapidfuzz extract fallito (scorer=%s): %s", scorer, e)
                     continue
 
                 for _key, raw_score, idx in results:

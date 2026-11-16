@@ -1,6 +1,6 @@
-# Contesto completo — Serato Playlist Automation v4.4
+# Contesto completo — Serato Playlist Automation v4.5
 
-*Documento di bootstrap per nuove sessioni AI. Aggiornato luglio 2026.*
+*Documento di bootstrap per nuove sessioni AI. Aggiornato a v4.5.*
 *Da leggere PRIMA di qualsiasi intervento sul codice.*
 
 ---
@@ -23,30 +23,45 @@ Applicazione desktop **Windows** per DJ professionisti. Permette di:
 ## 2. Struttura del progetto
 
 ```
-Serato_Playlist_Automation_v4.1/
+Serato_Playlist_Automation_v4.5/
 ├── main.py                          # Entry point, check dipendenze
 ├── launch_silently.pyw              # Avvio senza console (produzione)
-├── requirements.txt
-├── config.json                      # Preferenze utente (generato a runtime)
-├── title_locks.json                 # Lock titolo→filepath (generato a runtime)
-├── serato_debug.log                 # Log debug (generato a runtime)
+├── requirements.txt                 # Core deps (PySide6, rapidfuzz, mutagen, Send2Trash, certifi)
+├── requirements-amazon.txt          # Opzionale: + playwright (import Amazon Music)
+├── config.example.json              # Template config (path vuoti)
+├── LICENSE                          # MIT
+├── pytest.ini + tests/              # Test suite (config, parser, matcher, serato_database, cache)
+├── config.json                      # Preferenze utente (gitignored, generato a runtime)
+├── title_locks.json                 # Lock titolo→filepath (gitignored)
+├── serato_debug.log                 # Log rotante (gitignored, max 3×5 MB)
+├── library_cache_<hash>.json        # Cache libreria JSON (gitignored, ex-pickle)
 ├── serato_automation/
-│   ├── ui_main.py                   # UI monolitica (~4037 righe) — CUORE del progetto
-│   ├── track_matcher.py             # Engine fuzzy matching multi-pass
-│   ├── library_reader.py            # Scan cartella musica + estrazione metadati
+│   ├── ui_main/                     # ★ PACKAGE UI (ex-monolite ui_main.py, v4.5 refactor)
+│   │   ├── __init__.py              #   re-export public API (backward-compat)
+│   │   ├── constants.py             #   COL_*, E_COL_*, soglie, AI_CLEANUP_PROMPT
+│   │   ├── styles.py                #   stylesheet light/dark, score→colore, _DARK_THEME_ACTIVE
+│   │   ├── helpers.py               #   format_score, button alt-text, recycle-bin
+│   │   ├── workers.py               #   WorkerThread / LibraryScan / Match / Import (Qt)
+│   │   ├── widgets.py               #   BusyDialog, PlayerCellWidget, delegates, overlay
+│   │   ├── results_table.py         #   ResultsTable (QTableWidget)
+│   │   ├── dialogs.py               #   Settings, ImportUrl, ProUpgrade, FormatGuide, ...
+│   │   └── main_window.py            #   MainWindow + run_app()
+│   ├── cache.py                     # ★ Cache libreria JSON atomica (sostituisce pickle)
+│   ├── track_matcher.py             # Engine fuzzy matching multi-pass + cancel_check
+│   ├── library_reader.py            # Scan + metadati + _failed_files + cancel_check
 │   ├── playlist_parser.py           # Parser playlist vari formati
-│   ├── playlist_importer.py         # Scraping YouTube/Spotify
-│   ├── crate_writer.py              # Scrittura .crate Serato (formato TLV binario)
+│   ├── playlist_importer.py         # Scraping YouTube/Spotify/Amazon (SSL verificato, URL strict)
+│   ├── crate_writer.py              # Scrittura .crate Serato (TLV binario)
+│   ├── serato_database.py           # database V2 read/write, multi-drive cleanup
 │   ├── report_generator.py          # Generazione report mancanti/summary
-│   ├── config.py                    # Caricamento/salvataggio config JSON
-│   ├── i18n.py                      # Sistema traduzioni tr() + en/it
+│   ├── config.py                    # Config JSON (scritture atomiche)
+│   ├── i18n.py                      # tr() + en/it (locale.getlocale, no deprecato)
 │   ├── i18n_locales.py              # Pacchetti de/es/fr/ru/zh
-│   └── log_handler.py               # Configurazione logging
-└── docs/
-    ├── README.md
+│   └── log_handler.py               # RotatingFileHandler (3×5 MB, append)
+└── docs/                            # NON gitignored — preserva il contesto per le IA future
     ├── contesto.md                  ← QUESTO FILE
     ├── architettura_tecnica.md
-    ├── audit_codice.md
+    ├── audit_completo.md            # Audit v4.4 + note risoluzione v4.5
     ├── faq_troubleshooting.md
     ├── prompt_next_ia.md
     └── articolo_blog.md
@@ -54,33 +69,37 @@ Serato_Playlist_Automation_v4.1/
 
 ---
 
-## 3. Versione corrente: v4.4
+## 3. Versione corrente: v4.5
 
-### Novità v4.4
+### Novità v4.5 (audit-fix + refactor)
 
 | Area | Dettaglio |
 |------|-----------|
-| **UI** | Header brand, sezioni ① Libreria / ② Strumenti & Serato, footer con feedback sirviodj.it |
-| **Pro** | Pulsante upgrade + dialog licenza one-time (backend TBD) |
-| **branding.py** | APP_VERSION, URL, `open_url()`, `is_pro_license()` |
-| **Serato DB** | Pulizia/eliminazione su tutti i database V2 (home + per-drive) |
-| **Editing** | Colonna Genre; auto-refresh Duplicati dopo Elimina |
+| **Architettura** | `ui_main.py` (6053 righe) → **package `serato_automation/ui_main/`** (8 sottomoduli + `__init__`). API pubblica invariata: `from serato_automation.ui_main import run_app` funziona ancora. Il monolite NON esiste più. |
+| **Sicurezza** | Cache libreria: `pickle` → **JSON** in nuovo modulo `cache.py` (no RCE, scritture atomiche). SSL **verificato** via `certifi` in `playlist_importer`. Validazione URL **strict hostname** (`urlparse`, no substring). |
+| **Robustezza** | `QThread.terminate()` → **cancellazione cooperativa** (`requestInterruption` + `cancel_check` in scan_folder/match_playlist). Scritture **atomiche** config/title_locks/cache. `RotatingFileHandler` (3×5 MB, append). `QMediaPlayer` con error handling + degrade graceful. `_run_busy` su QThread+QEventLoop (dialog animata, UI non freeze). |
+| **Igiene repo** | Untracked: `config.json`, `title_locks.json`, `library_cache_*.pkl`, 23 `.pyc`, junk (`ggg`, `_it_check.txt`, `_gen_i18n_locales.py`, `.iml`, `istruzioni.docx`). `.gitignore` comprehensivo. `LICENSE` MIT. `config.example.json`. Split `requirements.txt` / `requirements-amazon.txt`. Python **3.10** ovunque. |
+| **UX** | `music_folder` default `""` (no più `E:/`). File saltati in scansione → log WARNING + status bar. Stringhe IT hardcoded → `tr()`. `install.bat` chiede se serva Amazon Music. |
+| **Testing** | Suite pytest: `test_config`, `test_playlist_parser`, `test_track_matcher`, `test_serato_database`, `test_cache` (28 test, tutti verdi). |
+| **Compat** | `locale.getdefaultlocale()` (deprecato, rimosso in 3.15) → `locale.getlocale()` + fallback env. |
 
 ### Storico rilevante
 
 | Versione | Novità principali |
 |----------|-------------------|
-| v4.0 | Refactor matching multi-pass, lock doppio (composer + JSON) |
-| v4.1 | Player audio integrato (QMediaPlayer), overlay riga evidenziata |
-| v4.2 | Cache libreria pickle, riscansione pre-chiusura, duplicate cyan |
-| **v4.3** | Dark theme, SettingsDialog a tab, BPM penalty, PrepareEventWizard, font size dinamico, colori tabella adattivi |
+| v4.4 | Header brand, sezioni ①/②, footer feedback sirviodj.it, branding.py, cleanup DB Serato multi-drive |
+| v4.3 | Dark theme, SettingsDialog a tab, BPM penalty, PrepareEventWizard, font size dinamico |
+| v4.2 | Cache libreria (ex-pickle), riscansione pre-chiusura, duplicate cyan |
+| v4.0–4.1 | Refactor matching multi-pass, lock doppio, player audio integrato |
 
 ### File da aggiornare ad ogni bump di versione
 
-- `ui_main.py` → header commento, `setWindowTitle(...)`, `_logger.info("Avvio applicazione vX.Y")`
-- `main.py` → commento header + `print("  Serato Playlist Automation vX.Y")`
-- `docs/README.md` → "versione documentata"
-- `docs/architettura_tecnica.md` → titolo e sezioni
+- `branding.py` → `APP_VERSION` (sorgente unica di verità)
+- `main.py` → banner console
+- `i18n.py` → chiave `window_title` (en + it)
+- `docs/contesto.md` → header + sezione "Novità vX.Y"
+- `docs/prompt_next_ia.md` → versione citata
+- `start.bat` legge `APP_VERSION` dinamicamente da `branding.py` (no hardcode)
 
 ---
 

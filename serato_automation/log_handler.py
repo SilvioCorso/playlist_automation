@@ -7,6 +7,7 @@
 import os
 import sys
 import logging
+import logging.handlers
 
 
 def get_log_file_path() -> str:
@@ -29,8 +30,12 @@ def setup_logging() -> logging.Logger:
 
     log_path = get_log_file_path()
 
-    # File handler: DEBUG level, captures EVERYTHING
-    fh = logging.FileHandler(log_path, mode='w', encoding='utf-8')
+    # File handler: DEBUG level, captures EVERYTHING.
+    # Rotating (append mode) so a crash traceback is NOT erased by the next
+    # launch — keeps up to 3 x 5 MB of history for support tickets.
+    fh = logging.handlers.RotatingFileHandler(
+        log_path, mode='a', maxBytes=5_000_000, backupCount=3, encoding='utf-8',
+    )
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(logging.Formatter(
         '%(asctime)s [%(levelname)-5s] %(name)s: %(message)s',

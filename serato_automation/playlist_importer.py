@@ -24,44 +24,85 @@ import logging
 import ssl
 import urllib.request
 import xml.etree.ElementTree as ET
+from urllib.parse import urlparse
 from typing import List, Optional, Tuple
 
 logger = logging.getLogger('serato.importer')
 
+# Bundled CA certificates — fixes the Windows cert issue that previously forced
+# SSL verification off. Falls back to the OS trust store if certifi is absent.
+try:
+    import certifi
+    _CA_BUNDLE = certifi.where()
+except ImportError:  # pragma: no cover - certifi is in requirements.txt
+    _CA_BUNDLE = None
+
+
+def _ssl_context() -> ssl.SSLContext:
+    """Return a verified SSL context using certifi's CA bundle when available."""
+    ctx = ssl.create_default_context(cafile=_CA_BUNDLE)
+    # Verification stays ON (check_hostname=True, verify_mode=CERT_REQUIRED).
+    return ctx
+
+
+# Strict hostname whitelist — prevents substring-spoofing (e.g. a URL like
+# https://attacker.com/?x=youtube.com must NOT be treated as YouTube).
+_YOUTUBE_HOSTS = {
+    'youtube.com', 'www.youtube.com', 'youtu.be', 'music.youtube.com', 'm.youtube.com',
+}
+_SPOTIFY_HOSTS = {'open.spotify.com', 'spotify.com', 'www.spotify.com'}
+_AMAZON_SUFFIXES = (
+    '.amazon.com', '.amazon.it', '.amazon.de', '.amazon.fr', '.amazon.es', '.amazon.co.uk',
+)
+
 
 def import_playlist_from_url(url: str) -> Tuple[str, List[str]]:
-    """Import playlist tracks from a YouTube, Spotify, or Amazon Music URL."""
-    url = url.strip()
+    """Import playlist tracks from a YouTube, Spotify, or Amazon Music URL.
 
-    if 'youtube.com' in url or 'youtu.be' in url:
+    Routing is based on the parsed hostname (strict match), never on a bare
+    substring test, so spoofed URLs cannot reach the fetchers.
+    """
+    url = url.strip()
+    if len(url) > 2048:
+        raise ValueError("URL troppo lungo (limite 2048 caratteri).")
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ('http', 'https'):
+        raise ValueError("Schema URL non supportato. Usa http:// o https://")
+
+    host = parsed.netloc.lower()
+    # Strip optional 'user@' or port for matching.
+    if '@' in host:
+        host = host.split('@', 1)[1]
+    if ':' in host:
+        host = host.split(':', 1)[0]
+
+    if host in _YOUTUBE_HOSTS:
         return ('YouTube', _import_youtube(url))
-    elif 'spotify.com' in url:
+    if host in _SPOTIFY_HOSTS:
         return ('Spotify', _import_spotify(url))
-    elif 'music.amazon.' in url or ('amazon.' in url and '/music/' in url):
+    if host.endswith(_AMAZON_SUFFIXES) and (host.startswith('music.') or '/music/' in parsed.path):
         return ('Amazon Music', _import_amazon_music(url))
-    else:
-        raise ValueError(
-            "URL non supportata.\n\n"
-            "Formati supportati:\n"
-            "- YouTube: https://www.youtube.com/playlist?list=...\n"
-            "- Spotify: https://open.spotify.com/playlist/...\n"
-            "- Amazon Music: https://music.amazon.it/user-playlists/... "
-            "oppure /playlists/... o /albums/..."
-        )
+
+    raise ValueError(
+        "URL non supportata.\n\n"
+        "Formati supportati:\n"
+        "- YouTube: https://www.youtube.com/playlist?list=...\n"
+        "- Spotify: https://open.spotify.com/playlist/...\n"
+        "- Amazon Music: https://music.amazon.it/user-playlists/... "
+        "oppure /playlists/... o /albums/..."
+    )
 
 
 def _fetch_url(url: str, timeout: int = 30) -> str:
-    """Fetch URL content using urllib with SSL verification disabled."""
+    """Fetch URL content using urllib with SSL verification ENABLED (certifi)."""
     req = urllib.request.Request(url, headers={
         'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
                        'AppleWebKit/537.36 (KHTML, like Gecko) '
                        'Chrome/120.0.0.0 Safari/537.36'),
         'Accept-Language': 'en-US,en;q=0.9,it;q=0.8',
     })
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    with urllib.request.urlopen(req, timeout=timeout, context=ctx) as response:
+    with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as response:
         return response.read().decode('utf-8', errors='replace')
 
 
@@ -415,6 +456,9 @@ def _fetch_youtube_continuation(token: str, playlist_id: str) -> dict:
         "context": {
             "client": {
                 "clientName": "WEB",
+                # NOTE: clientVersion is a synthetic future date. YouTube's innertube
+                # API accepts a wide range; if validation tightens and continuations
+                # start returning empty, the loop below stops after 3 empty pages.
                 "clientVersion": "2.20260101.00.00",
                 "hl": "en",
             }
@@ -437,10 +481,7 @@ def _fetch_youtube_continuation(token: str, playlist_id: str) -> dict:
         },
         method="POST",
     )
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    with urllib.request.urlopen(req, timeout=30, context=ctx) as response:
+    with urllib.request.urlopen(req, timeout=30, context=_ssl_context()) as response:
         return json.loads(response.read().decode("utf-8", errors="replace"))
 
 
@@ -494,6 +535,7 @@ def _import_youtube_all_pages(initial_data: dict, playlist_id: str) -> List[str]
                     expected, len(titles))
 
     # Only paginate when the sidebar says there are more items than we parsed.
+    empty_streak = 0
     while token and (expected is None or len(titles) < expected):
         logger.info("YouTube: richiesta continuazione (%d/%s)...",
                     len(titles), expected or "?")
@@ -504,7 +546,16 @@ def _import_youtube_all_pages(initial_data: dict, playlist_id: str) -> List[str]
             break
         more, token = _parse_youtube_continuation_response(cont_data)
         if not more:
-            break
+            empty_streak += 1
+            if empty_streak >= 3:
+                # YouTube silently changed validation — stop instead of looping.
+                logger.warning(
+                    "YouTube: 3 continuation pages returned 0 items; "
+                    "stopping at %d/%s tracks (clientVersion may need updating).",
+                    len(titles), expected or "?")
+                break
+            continue
+        empty_streak = 0
         titles.extend(more)
 
     return titles

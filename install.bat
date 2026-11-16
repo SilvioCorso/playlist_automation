@@ -10,7 +10,7 @@ python --version >nul 2>&1
 if errorlevel 1 (
     echo [ERRORE] Python non trovato!
     echo.
-    echo Python 3.11 o superiore e richiesto.
+    echo Python 3.10 o superiore e richiesto.
     echo Scaricalo da: https://www.python.org/downloads/
     echo.
     echo IMPORTANTE: Durante l'installazione, spunta
@@ -25,7 +25,7 @@ python --version
 echo.
 
 :: Create virtual environment
-echo [1/3] Creazione ambiente virtuale...
+echo [1/4] Creazione ambiente virtuale...
 if not exist "venv" (
     python -m venv venv
     if errorlevel 1 (
@@ -40,17 +40,15 @@ if not exist "venv" (
 echo.
 
 :: Activate virtual environment
-echo [2/3] Attivazione ambiente virtuale...
+echo [2/4] Attivazione ambiente virtuale...
 call venv\Scripts\activate.bat
 echo [OK] Ambiente virtuale attivato.
 echo.
 
-:: Install dependencies
-echo [3/3] Installazione dipendenze...
+:: Install core dependencies
+echo [3/4] Installazione dipendenze core...
 python -m pip install --upgrade pip --quiet 2>nul
 pip install -r requirements.txt
-echo.
-
 if errorlevel 1 (
     echo [ERRORE] Si e verificato un errore durante l'installazione.
     echo Prova a eseguire manualmente:
@@ -60,19 +58,24 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
+echo.
 
-:: Install Playwright Chromium (needed for Amazon Music URL import)
-echo [4/4] Download del browser headless per Amazon Music...
-playwright install chromium
-if errorlevel 1 (
-    echo [AVVISO] Installazione di Playwright Chromium non riuscita.
-    echo L'import da YouTube e Spotify continuera a funzionare.
-    echo Per abilitare Amazon Music, esegui manualmente:
-    echo   venv\Scripts\activate
-    echo   playwright install chromium
-    echo.
+:: Optional: Amazon Music import (Playwright + Chromium, ~400 MB)
+echo [4/4] Import da Amazon Music (opzionale, richiede ~400 MB)?
+set /p WANT_AMAZON="Vuoi abilitare l'import da Amazon Music? [s/N]: "
+if /i "%WANT_AMAZON%"=="s" (
+    echo Installazione Playwright + Chromium...
+    pip install -r requirements-amazon.txt
+    python -m playwright install chromium
+    if errorlevel 1 (
+        echo [AVVISO] Installazione di Playwright Chromium non riuscita.
+        echo L'import da YouTube e Spotify continuera a funzionare.
+        echo Per riprovare: venv\Scripts\activate ^&^& playwright install chromium
+    ) else (
+        echo [OK] Import da Amazon Music abilitato.
+    )
 ) else (
-    echo [OK] Browser headless installato.
+    echo [OK] Salto Amazon Music. YouTube e Spotify rimangono disponibili.
 )
 echo.
 

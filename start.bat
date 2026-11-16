@@ -1,8 +1,11 @@
 @echo off
 title Serato Playlist Automation
+:: Read version dynamically from branding.py so this banner never drifts
+for /f "delims=" %%v in ('python -c "from serato_automation.branding import APP_VERSION; print(APP_VERSION)" 2^>nul') do set APPVER=%%v
+if "%APPVER%"=="" set APPVER=4.5
 echo ======================================
-echo   Serato Playlist Automation v3.4
-echo   Installazione + Avvio automatico (v3.4)
+echo   Serato Playlist Automation v%APPVER%
+echo   Installazione + Avvio automatico
 echo ======================================
 echo.
 
@@ -11,7 +14,7 @@ python --version >nul 2>&1
 if errorlevel 1 (
     echo [ERRORE] Python non trovato!
     echo.
-    echo Python 3.11 o superiore e richiesto.
+    echo Python 3.10 o superiore e richiesto.
     echo Scaricalo da: https://www.python.org/downloads/
     echo.
     echo IMPORTANTE: Durante l'installazione, spunta
@@ -54,7 +57,7 @@ echo [OK] Dipendenze installate.
 echo.
 
 echo ======================================
-echo   Avvio applicazione...
+echo   Avvio applicazione v%APPVER%...
 echo ======================================
 echo.
 

@@ -1,9 +1,9 @@
-# Serato Playlist Automation v1.0
+# Serato Playlist Automation v4.5
 
 **Applicazione desktop per automatizzare il confronto tra playlist clienti e la tua libreria Serato DJ.**
 
 ![Windows](https://img.shields.io/badge/Platform-Windows-blue)
-![Python](https://img.shields.io/badge/Python-3.11+-green)
+![Python](https://img.shields.io/badge/Python-3.10+-green)
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 
 ---
@@ -23,7 +23,7 @@ Quando ricevi una playlist per un evento:
 ## Requisiti
 
 - **Windows 10/11**
-- **Python 3.11 o superiore** (scarica da https://www.python.org/downloads/)
+- **Python 3.10 o superiore** (scarica da https://www.python.org/downloads/)
   - **IMPORTANTE**: durante l'installazione di Python, spunta la casella **"Add Python to PATH"**
 
 ---
@@ -196,7 +196,7 @@ nel file `config.json` modificando il campo `serato_folder`.
 ## Risoluzione Problemi
 
 ### "Python non trovato"
-Installa Python 3.11+ da https://www.python.org/downloads/
+Installa Python 3.10+ da https://www.python.org/downloads/
 Assicurati di spuntare "Add Python to PATH" durante l'installazione.
 
 ### "Impossibile creare la crate"

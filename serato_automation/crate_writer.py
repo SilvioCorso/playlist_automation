@@ -508,9 +508,11 @@ class CrateWriter:
 
         clean_paths = []
         for p in track_paths:
-            logger.info("  Traccia orig: '%s' [esiste=%s]", p, os.path.exists(p))
+            # Per-track existence stat removed — it was only used for logging and
+            # costs one syscall per track (slow on SMB/NFS shares for big crates).
+            logger.debug("  Traccia orig: '%s'", p)
             sanitized = _sanitize_crate_path(p)
-            logger.info("  Traccia sanit: '%s'", sanitized)
+            logger.debug("  Traccia sanit: '%s'", sanitized)
             clean_paths.append(sanitized)
 
         # Deduplicate

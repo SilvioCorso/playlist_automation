@@ -1,6 +1,6 @@
 # Roadmap — Proposte e implementazioni future
 
-*Serato Playlist Automation v4.4 — SirvioDJ*
+*Serato Playlist Automation v4.5 — SirvioDJ*
 *Documento vivo: aggiornare ad ogni sprint o sessione di sviluppo.*
 
 ---
@@ -20,9 +20,9 @@
 
 | # | Proposta | Priorità | Stato | Note |
 |---|----------|----------|-------|------|
-| A1 | Header brand + footer con link sirviodj.it | 🔴 | ✅ v4.4 | Header viola, footer feedback/website |
-| A2 | Riorganizzazione bottoni per flusso logico (① Libreria → ② Tools → Tab) | 🔴 | ✅ v4.4 | Sezioni numerate |
-| A3 | Pulsante Pro con dialog acquisto one-time | 🔴 | ✅ v4.4 | Licensing backend da collegare |
+| A1 | Header brand + footer con link sirviodj.it | 🔴 | ✅ v4.5 | Header viola, footer feedback/website |
+| A2 | Riorganizzazione bottoni per flusso logico (① Libreria → ② Tools → Tab) | 🔴 | ✅ v4.5 | Sezioni numerate |
+| A3 | Pulsante Pro con dialog acquisto one-time | 🔴 | ✅ v4.5 | Licensing backend da collegare |
 | A4 | Icone SVG al posto di emoji nei bottoni | 🟡 | ⏳ | Migliore resa su DPI alti |
 | A5 | Tooltip contestuali al primo avvio (onboarding tour) | 🟡 | ⏳ | QToolTip + flag `onboarding_done` |
 | A6 | Barra progresso globale unificata (non solo tab Playlist) | 🟡 | ⏳ | Stessa BusyDialog ovunque |
@@ -54,7 +54,7 @@
 |---|----------|----------|-------|------|
 | C1 | Tab Editing con title/artist/album/genre editabili | 🔴 | ✅ v4.3+ | |
 | C2 | Pulisci libreria (search + mojibake detect) | 🔴 | ✅ v4.3+ | |
-| C3 | Duplicati + elimina cestino + purge Serato multi-DB | 🔴 | ✅ v4.4 | remove_from_all_databases |
+| C3 | Duplicati + elimina cestino + purge Serato multi-DB | 🔴 | ✅ v4.5 | remove_from_all_databases |
 | C4 | Hotcue count da Serato Markers2 | 🟡 | ✅ v4.3+ | Colonna opzionale risultati/editing |
 | C5 | Riparazione mojibake automatica batch ("Pulisci tutto") | 🔴 | ⏳ | Previsto, UI in sospeso |
 | C6 | Normalizzazione batch genre/BPM/key | 🟡 | ⏳ | Estensione tab Editing |
@@ -69,7 +69,7 @@
 
 | # | Proposta | Priorità | Stato | Note |
 |---|----------|----------|-------|------|
-| D1 | Aggiorna Serato DB (tsng/tart/talb/tgen) multi-drive | 🔴 | ✅ v4.4 | Solo righe salvate |
+| D1 | Aggiorna Serato DB (tsng/tart/talb/tgen) multi-drive | 🔴 | ✅ v4.5 | Solo righe salvate |
 | D2 | Trova differenze (folder vs database V2) | 🔴 | ✅ v4.3+ | Output tab Risultati |
 | D3 | Hot-reload crate in Serato senza riavvio | 🔴 | ❌ Impossibile | Limite architettura Serato |
 | D4 | Sync Smart Crates / history / played count | 🟡 | ⏳ | Richiede reverse engineering |
@@ -83,7 +83,7 @@
 
 | # | Proposta | Priorità | Stato | Note |
 |---|----------|----------|-------|------|
-| E1 | Dialog Pro + link sirviodj.it | 🔴 | ✅ v4.4 | |
+| E1 | Dialog Pro + link sirviodj.it | 🔴 | ✅ v4.5 | |
 | E2 | Backend licensing (chiave serial / email) | 🔴 | ⏳ | `license_pro` in config placeholder |
 | E3 | Feature gate: libreria > N tracce solo Pro | 🟡 | ⏳ | Es. 10.000 tracce free |
 | E4 | Feature gate: batch editing / duplicati Pro | 🟡 | ⏳ | |
@@ -97,7 +97,7 @@
 
 | # | Proposta | Priorità | Stato | Note |
 |---|----------|----------|-------|------|
-| F1 | Modulo branding.py (URL, versione) | 🟡 | ✅ v4.4 | |
+| F1 | Modulo branding.py (URL, versione) | 🟡 | ✅ v4.5 | |
 | F2 | Estrarre stylesheet in ui/styles.py | 🟡 | ⏳ | ~300 righe da ui_main |
 | F3 | Estrarre dialogs in ui/dialogs.py | 🟡 | ⏳ | Settings, Wizard, Pro, Clean |
 | F4 | Estrarre ResultsTable in ui/results_table.py | 🟡 | ⏳ | ~1200 righe |
@@ -127,8 +127,8 @@
 
 | # | Proposta | Priorità | Stato | Note |
 |---|----------|----------|-------|------|
-| H1 | Documentazione tecnica v4.4 | 🔴 | ✅ v4.4 | documentazione_tecnica.md |
-| H2 | Prompt IA aggiornato | 🔴 | ✅ v4.4 | prompt_next_ia.md |
+| H1 | Documentazione tecnica v4.5 | 🔴 | ✅ v4.5 | documentazione_tecnica.md |
+| H2 | Prompt IA aggiornato | 🔴 | ✅ v4.5 | prompt_next_ia.md |
 | H3 | Video tutorial embedded (link YouTube in app) | 🟡 | ⏳ | Pulsante Help |
 | H4 | Changelog in-app (tab Updates) | 🟡 | ⏳ | Settings già predisposto |
 | H5 | FAQ interattiva con ricerca | 🟡 | ⏳ | Da faq_troubleshooting.md |

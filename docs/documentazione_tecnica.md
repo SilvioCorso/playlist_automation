@@ -1,4 +1,4 @@
-# Documentazione tecnica — Serato Playlist Automation v4.4
+# Documentazione tecnica — Serato Playlist Automation v4.5
 
 *Aggiornata: luglio 2026. Per il bootstrap rapido leggere anche `contesto.md`.*
 
@@ -56,11 +56,11 @@ Serato_Playlist_Automation_v4.1/
 
 ---
 
-## 3. Layout UI (v4.4)
+## 3. Layout UI (v4.5)
 
 ```
 ┌─ Header bar ─────────────────────────────────────────────────────┐
-│  Serato Playlist Automation  v4.4          [Pro] [Wizard] [⚙]   │
+│  Serato Playlist Automation  v4.5          [Pro] [Wizard] [⚙]   │
 │  Tagline professionale                                            │
 ├─ ① Libreria ─────────────────────────────────────────────────────┤
 │  Cartella musica [________] [Sfoglia] [Scansiona] │ stato lib.  │
@@ -119,10 +119,10 @@ Serato_Playlist_Automation_v4.1/
 - Path senza lettera drive (formato Serato)
 - Validazione drive letter prima dell'export
 
-### 4.5 `branding.py` (v4.4)
+### 4.5 `branding.py` (v4.5)
 
 ```python
-APP_VERSION = "4.4"
+APP_VERSION = "4.5"
 URL_FEEDBACK = "https://sirviodj.it/blog/...#formContatto"
 URL_PRO_UPGRADE = "..."  # stesso anchor form contatto/acquisto
 open_url(url)            # webbrowser standard
@@ -185,7 +185,7 @@ vrsn + otrk entries...
 - Funzione `tr(key, **kwargs)` in `i18n.py`
 - Base EN + IT inline; estensioni in `i18n_locales.py`
 - `_retranslate_ui()` in MainWindow aggiorna tutta l'UI al cambio lingua
-- Nuove chiavi v4.4: `app_tagline`, `grp_tools`, `btn_pro_upgrade`, `btn_feedback`, `pro_dialog_*`
+- Nuove chiavi v4.5: `app_tagline`, `grp_tools`, `btn_pro_upgrade`, `btn_feedback`, `pro_dialog_*`
 
 ---
 
@@ -221,4 +221,4 @@ Dipendenze: `PySide6`, `rapidfuzz`, `mutagen`, `Send2Trash`
 
 ---
 
-*Fine documentazione tecnica v4.4*
+*Fine documentazione tecnica v4.5*

@@ -1,11 +1,11 @@
-# FAQ e risoluzione problemi — Serato Playlist Automation v4.2
+# FAQ e risoluzione problemi — Serato Playlist Automation v4.5
 
 ---
 
 ## Installazione e avvio
 
 ### Python non trovato
-Installa Python 3.11+ da [python.org](https://www.python.org/downloads/). Durante l'installazione spunta **"Add Python to PATH"**. Poi esegui `install.bat`.
+Installa Python 3.10+ da [python.org](https://www.python.org/downloads/). Durante l'installazione spunta **"Add Python to PATH"**. Poi esegui `install.bat`.
 
 ### PySide6 non installato
 Esegui `install.bat` nella cartella del progetto oppure:
@@ -168,7 +168,7 @@ L'import usa pagine embed pubbliche. Se Spotify/YouTube cambiano struttura, l'im
 Pulsante **Apri Log** nella barra superiore, oppure file `serato_debug.log` nella cartella del progetto.
 
 ### Segnalare un bug
-Allega estratto del log + screenshot + passi per riprodurre + versione app (titolo finestra: v4.2).
+Allega estratto del log + screenshot + passi per riprodurre + versione app (titolo finestra: v4.5).
 
 ---
 

@@ -7,7 +7,7 @@ import sys
 import webbrowser
 from typing import Optional
 
-APP_VERSION = "4.4"
+APP_VERSION = "4.5"
 APP_NAME = "Serato Playlist Automation"
 APP_VENDOR = "SirvioDJ"
 APP_TAGLINE_KEY = "app_tagline"  # i18n key

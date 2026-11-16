@@ -1,4 +1,4 @@
-# Prompt di inizializzazione — Serato Playlist Automation v4.4
+# Prompt di inizializzazione — Serato Playlist Automation v4.5
 
 Copia e incolla il blocco seguente all'inizio di ogni nuova sessione con un'AI.
 
@@ -9,11 +9,11 @@ Copia e incolla il blocco seguente all'inizio di ogni nuova sessione con un'AI.
 ## BLOCCO PROMPT (copia da qui)
 
 ```
-Sei uno sviluppatore Python/Qt che lavora su "Serato Playlist Automation v4.4",
+Sei uno sviluppatore Python/Qt che lavora su "Serato Playlist Automation v4.5",
 applicazione desktop Windows per DJ professionali (vendor: SirvioDJ — sirviodj.it).
 
 ## Versione attuale
-v4.4 — bumpare in branding.py (APP_VERSION) ad ogni gruppo significativo di modifiche,
+v4.5 — bumpare in branding.py (APP_VERSION) ad ogni gruppo significativo di modifiche,
 poi allineare main.py, i18n window_title, docs/contesto.md e questo file.
 
 ## Scopo del prodotto
@@ -30,7 +30,10 @@ Windows 10/11 · tutto locale · nessun backend cloud
 main.py / launch_silently.pyw
 config.json / title_locks.json / library_cache_*.pkl / serato_debug.log
 serato_automation/
-  ui_main.py           # ~5900 righe — UI monolitica (estrarre moduli solo se chiaro)
+  ui_main/            # PACKAGE UI (v4.5: ex-monolite ui_main.py)
+    __init__.py       # re-export public API (run_app, MainWindow, ResultsTable, ...)
+    constants.py styles.py helpers.py workers.py
+    widgets.py results_table.py dialogs.py main_window.py
   branding.py          # APP_VERSION, URL sirviodj.it, open_url(), is_pro_license()
   track_matcher.py     # matching + scoring v5 (modello contabile + gate rigidi)
   library_reader.py    # scan, set_tags, count_hotcues, mojibake repair
@@ -44,7 +47,7 @@ docs/
   roadmap_miglioramenti.md
 ```
 
-## Layout UI v4.4
+## Layout UI v4.5
 Header (brand + Pro + Wizard + Settings)
 → ① Libreria (cartella + scan + stato)
 → ② Strumenti & Serato (pulisci, differenze, duplicati, crate name)
@@ -114,6 +117,6 @@ Doppio click su launch_silently.pyw (pythonw, no console)
 ## Note per l'operatore
 
 - Il folder si chiama `v4.1` ma la versione codice è **4.4**
-- `ui_main.py` è grande ma coeso — refactoring solo con piano esplicito
+- `ui_main/` è un package di 8 sottomoduli coesi (v4.5) — refactoring solo con piano esplicito
 - Terminal sandbox a volte non restituisce exit code — verificare con launch_silently.pyw
 - Roadmap future: `docs/roadmap_miglioramenti.md`

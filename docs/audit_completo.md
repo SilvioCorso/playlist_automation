@@ -1,5 +1,27 @@
 # Audit Completo del Software — Serato Playlist Automation v4.4
 
+> **STATO RISOLUZIONE (v4.5):** la maggior parte delle 39 issue di questo audit
+> è stata risolta nella release v4.5. Vedi `docs/contesto.md` §3 per il riepilogo.
+> Stato dettagliato per priorità:
+> - **Critiche (5):** 3.1 token — ignorata per esplicita richiesta utente;
+>   3.2 config.json untracked ✅; 3.3 cache pickle untracked + pickle→JSON ✅;
+>   3.4 SSL verificato via certifi ✅; 3.5 LICENSE MIT ✅.
+> - **Alte (12):** 4.1 monolite→package ✅; 4.2 .pyc untracked ✅; 4.3 junk untracked ✅;
+>   4.4 pickle→JSON cache.py ✅; 4.5 terminate()→cooperativo ✅; 4.6 _run_busy QThread ✅;
+>   4.7 Python 3.10 ovunque ✅; 4.8 music_folder default "" ✅; 4.9 requirements split ✅;
+>   4.10 test suite (28 test) ✅; 4.11 I/O error handling (log) ✅; 4.12 .gitignore ✅.
+> - **Medie (13):** 5.1 URL strict ✅; 5.2 except-Exception (3 siti critici loggati;
+>   sweep completo dei restanti ~17 siti = backlog) ◐; 5.3 scritture atomiche ✅;
+>   5.4 RotatingFileHandler ✅; 5.5 locale.getlocale ✅; 5.6 QMediaPlayer error handling ✅;
+>   5.7 stringhe IT→tr() (4 stringhe) ✅; 5.8 set_composer_lock su QThread = backlog ◐;
+>   5.9 guardie cross-platform ✅; 5.10 split _import_amazon_music = backlog ◐;
+>   5.11 track failed scan files ✅; 5.12 crate_writer exists-check ✅; 5.13 versioni allineate ✅.
+> - **Basse (9):** 6.1 magic numbers commentati ✅; 6.5 clientVersion comment+fallback ✅;
+>   6.2/6.3/6.4/6.6/6.7/6.8/6.9 = backlog quality.
+>
+> Il corpo dell'audit qui sotto è lo snapshot originale (v4.4) e va letto come
+> storia, non come stato corrente.
+
 **Data audit:** 26 agosto 2026
 **Versione auditata:** v4.4 (commit `a4e5d83`)
 **Autore audit:** AI code review

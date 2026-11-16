@@ -192,6 +192,9 @@ class LibraryReader:
         self._paths: Set[str] = set()
         self._scan_count = 0
         self._error_count = 0
+        # Per-file failure log: list of (filepath, error_msg). Surfaced via
+        # get_stats() so the UI can tell the DJ *which* files were skipped.
+        self._failed_files: List[tuple] = []
         self._file_counter = 0
         self._bpm_found = 0
         self._key_found = 0
@@ -199,7 +202,7 @@ class LibraryReader:
         self.config = config or {}
 
     def scan_folder(self, folder_path: str, extensions=None,
-                    progress_callback=None, max_workers=4) -> List[LibraryTrack]:
+                    progress_callback=None, max_workers=4, cancel_check=None) -> List[LibraryTrack]:
         if not folder_path or not os.path.isdir(folder_path):
             logger.error("Cartella non valida: %s", folder_path)
             return []
@@ -222,6 +225,7 @@ class LibraryReader:
         self._paths = set()
         self._scan_count = 0
         self._error_count = 0
+        self._failed_files = []
         self._file_counter = 0
         self._bpm_found = 0
         self._key_found = 0
@@ -260,6 +264,7 @@ class LibraryReader:
 
         # Scan with thread pool
         results = []
+        cancelled = False
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(self._scan_single_file, fp): fp for fp in audio_files}
             for future in as_completed(futures):
@@ -272,6 +277,16 @@ class LibraryReader:
                         results.append(result)
                 except Exception:
                     self._error_count += 1
+                # Cooperative cancellation — checked after each completed file.
+                if cancel_check and cancel_check():
+                    cancelled = True
+                    for fut in futures:
+                        fut.cancel()
+                    break
+        if cancelled:
+            logger.info("Scan annullato dall'utente: %d/%d file elaborati", self._scan_count, total)
+            self.tracks = results
+            return self.tracks
 
         results.sort(key=lambda t: (t.artist.lower(), t.title.lower()))
         self.tracks = results
@@ -288,6 +303,12 @@ class LibraryReader:
         logger.info("  Key trovati:    %d / %d", self._key_found, len(results))
         logger.info("  Comment trovati: %d / %d", self._comment_found, len(results))
         logger.info("  Errori:          %d", self._error_count)
+        if self._failed_files:
+            logger.warning("  %d file saltati durante la scansione:", len(self._failed_files))
+            for fp, err in self._failed_files[:50]:
+                logger.warning("    - %s  [%s]", fp, err)
+            if len(self._failed_files) > 50:
+                logger.warning("    ... e altri %d (vedi log debug)", len(self._failed_files) - 50)
 
         return self.tracks
 
@@ -296,6 +317,8 @@ class LibraryReader:
             return self._extract_metadata(filepath)
         except Exception as e:
             self._error_count += 1
+            # list.append is atomic under the GIL → safe from worker threads.
+            self._failed_files.append((filepath, str(e)))
             logger.debug("Errore lettura %s: %s", filepath, e)
             return None
 
@@ -415,8 +438,8 @@ class LibraryReader:
                 info['album'] = self._get_tag(audio, 'album')
                 info['genre'] = self._get_tag(audio, 'genre')
                 info['year'] = self._get_tag(audio, 'date')
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("EasyID3 fallback fallito per %s: %s", filepath, e)
 
         # STEP 3: Audio info
         try:
@@ -1365,6 +1388,7 @@ class LibraryReader:
             'total_tracks': len(self.tracks),
             'total_size_mb': sum(t.file_size for t in self.tracks) / (1024 * 1024),
             'scan_errors': self._error_count,
+            'failed_files': list(self._failed_files),
             'formats': self._count_formats(),
             'has_bpm': self._bpm_found,
             'has_key': self._key_found,

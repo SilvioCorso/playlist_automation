@@ -417,7 +417,8 @@ def remove_from_crates(music_folder: str, rel_paths) -> int:
         try:
             with open(crate_path, 'rb') as f:
                 data = f.read()
-        except Exception:
+        except OSError as e:
+            logger.warning("Impossibile leggere crate %s: %s", crate_path, e)
             continue
 
         out = bytearray()

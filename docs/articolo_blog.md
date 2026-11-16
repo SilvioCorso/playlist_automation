@@ -1,6 +1,6 @@
 # Da 7000 brani e una playlist WhatsApp alla crate pronta: come ho automatizzato il lavoro che ogni DJ odia
 
-*Pubblicato su [il tuo blog] — Serato Playlist Automation v4.2*
+*Pubblicato su [il tuo blog] — Serato Playlist Automation v4.5*
 
 ---
 
@@ -124,7 +124,7 @@ Io l'ho scritto perché ne avevo bisogno io — 7000 brani non si gestiscono a m
 
 ## Prossimi passi
 
-Serato Playlist Automation è in evoluzione attiva (v4.2): player integrato, import URL, lock persistenti, validazione ordine titoli, UX da tabella professionale.
+Serato Playlist Automation è in evoluzione attiva (v4.5): player integrato, import URL, lock persistenti, validazione ordine titoli, UX da tabella professionale.
 
 Se prepari eventi con playlist clienti e una libreria che cresce ogni mese, questo non è un nice-to-have. È il pezzo che mancava tra «ho la musica» e «sono pronto a suonare».
 

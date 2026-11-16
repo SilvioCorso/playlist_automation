@@ -1,5 +1,5 @@
 # Serato Playlist Automation
-# Entry point module - v4.4
+# Entry point module - v4.5
 
 import sys
 import os
@@ -22,7 +22,7 @@ def check_dependencies():
 
 def main():
     print("=" * 55)
-    print("  Serato Playlist Automation v4.4")
+    print("  Serato Playlist Automation v4.5")
     print("  Automazione playlist per Serato DJ")
     print("=" * 55)
     print()

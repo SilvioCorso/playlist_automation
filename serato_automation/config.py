@@ -105,14 +105,22 @@ def load_config(config_path=None):
 
 
 def save_config(config, config_path=None):
-    """Save configuration to JSON file."""
+    """Save configuration to JSON file (atomic write).
+
+    Writes to a temp file then os.replace()s it into place, so a crash /
+    blackout / antivirus lock mid-write cannot leave a half-written file
+    that would reset the user's config on next launch. os.replace is atomic
+    on Windows for renames on the same volume.
+    """
     if config_path is None:
         config_path = CONFIG_PATH or get_default_config_path()
     config_dir = os.path.dirname(config_path)
     if config_dir:
         os.makedirs(config_dir, exist_ok=True)
-    with open(config_path, 'w', encoding='utf-8') as f:
+    tmp = config_path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
         json.dump(config, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, config_path)
 
 
 def get_music_folder(config):

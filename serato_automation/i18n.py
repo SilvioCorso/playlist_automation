@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import os
 import locale
 from typing import Dict
 
@@ -22,10 +23,23 @@ _current_lang: str = "en"
 
 
 def detect_os_language() -> str:
-    """Return a 2-letter language code based on the OS locale (best-effort)."""
+    """Return a 2-letter language code based on the OS locale (best-effort).
+
+    Uses locale.getlocale() (NOT the deprecated getdefaultlocale(), removed in
+    Python 3.15) with an environment-variable fallback for headless / frozen
+    environments where the C locale returns empty strings.
+    """
     try:
-        lang = locale.getdefaultlocale()[0] or ""
-        code = lang[:2].lower()
+        loc = None
+        try:
+            loc = locale.getlocale()[0]
+        except (ValueError, TypeError):
+            loc = None
+        if not loc:
+            # env vars checked in priority order; LANG is the POSIX default.
+            loc = os.environ.get("LC_ALL") or os.environ.get("LC_MESSAGES") \
+                or os.environ.get("LANG") or ""
+        code = (loc or "")[:2].lower()
         return code if code in SUPPORTED_LANGS else "en"
     except Exception:
         return "en"
@@ -92,7 +106,7 @@ def get_column_headers() -> list:
 TRANSLATIONS: Dict[str, Dict[str, str]] = {
     "en": {
         # Main window
-        "window_title": "Serato Playlist Automation v4.4",
+        "window_title": "Serato Playlist Automation v4.5",
         "status_ready": "Ready — Select the music folder and load a playlist",
         "app_tagline": "Match client playlists with your library and export Serato crates in minutes",
         "grp_config": "① Library",
@@ -235,6 +249,11 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "library_scan_error": "Scan error",
         "status_scanning": "Scanning library...",
         "status_library_cache": "Library loaded from cache: {count} tracks",
+        "status_library_loaded": "Library: {count} tracks ({size:.0f} MB) | BPM: {bpm} | Key: {keys} | Comment: {comment}",
+        "status_imported_from_url": "Imported {count} tracks from {source}. Total rows: {total}",
+        "status_matching_summary": "Matching: {matched} found, {missing} missing. Detailed log in serato_debug.log",
+        "status_scan_errors_suffix": " | {count} files skipped (see log)",
+        "dlg_load_playlist": "Load Playlist",
         "status_folder": "Folder: {folder}",
         "lbl_min_pct": "Min %:",
         "grp_select_by_score": "Select by score",
@@ -504,7 +523,7 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "wizard_default_event": "Event",
     },
     "it": {
-        "window_title": "Serato Playlist Automation v4.4",
+        "window_title": "Serato Playlist Automation v4.5",
         "status_ready": "Pronto — Seleziona la cartella musica e carica una playlist",
         "app_tagline": "Abbina le playlist dei clienti alla tua libreria ed esporta crate Serato in pochi minuti",
         "grp_config": "① Libreria",
@@ -647,6 +666,11 @@ TRANSLATIONS: Dict[str, Dict[str, str]] = {
         "library_scan_error": "Errore scansione",
         "status_scanning": "Scansione libreria in corso...",
         "status_library_cache": "Libreria caricata dalla cache: {count} tracce",
+        "status_library_loaded": "Libreria: {count} tracce ({size:.0f} MB) | BPM: {bpm} | Key: {keys} | Comment: {comment}",
+        "status_imported_from_url": "Importati {count} brani da {source}. Totale righe: {total}",
+        "status_matching_summary": "Matching: {matched} trovati, {missing} mancanti. Log dettagliato in serato_debug.log",
+        "status_scan_errors_suffix": " | {count} file saltati (vedi log)",
+        "dlg_load_playlist": "Carica Playlist",
         "status_folder": "Cartella: {folder}",
         "lbl_min_pct": "Min %:",
         "grp_select_by_score": "Selezione per score",

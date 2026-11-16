@@ -1,8 +1,7 @@
+# Serato Playlist Automation — core dependencies (~60 MB)
+# Install with:  pip install -r requirements.txt
 PySide6>=6.6.0
 rapidfuzz>=3.0.0
 mutagen>=1.47.0
 Send2Trash>=1.8.0
-# Optional: required only for Amazon Music URL import (Amazon Music is a
-# JavaScript SPA, so a headless browser is needed to render the page).
-# After installing playwright, also run:  playwright install chromium
-playwright>=1.40.0
+certifi>=2024.0.0

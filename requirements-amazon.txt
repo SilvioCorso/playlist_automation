@@ -1,0 +1,10 @@
+# Optional: Amazon Music URL import.
+# Amazon Music is a JavaScript SPA, so a headless browser is required to render
+# the page. This pulls in Playwright + Chromium (~400 MB). Only install this if
+# you need Amazon Music import; YouTube and Spotify import work with the core deps.
+#
+# Install with:
+#   pip install -r requirements-amazon.txt
+#   python -m playwright install chromium
+-r requirements.txt
+playwright>=1.40.0
