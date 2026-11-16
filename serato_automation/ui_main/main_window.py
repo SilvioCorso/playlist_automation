@@ -1801,12 +1801,18 @@ class MainWindow(QMainWindow):
         Each group header shows '▶ title (count)'; clicking expands/collapses an
         inline editing table (same columns as the flat Editing table + a trailing
         'Vicinanza' column). All groups start collapsed.
+
+        Tables are built LAZILY: only the header is created up-front (so the
+        accordion appears instantly even for hundreds of groups); the table for
+        a group is populated the first time the user expands it. The table height
+        is set to fit ALL its rows so there is no inner scrollbar — the outer
+        accordion scroll handles the page.
         """
         self._clear_duplicate_accordion()
         vlay = self._dup_accordion_vlayout
         p = ui_theme.palette()
 
-        for gi, g in enumerate(groups):
+        for g in groups:
             group_widget = QWidget()
             group_layout = QVBoxLayout(group_widget)
             group_layout.setContentsMargins(0, 0, 0, 0)
@@ -1814,7 +1820,8 @@ class MainWindow(QMainWindow):
 
             # Header button (toggle).
             title = g["representative_title"] or "(?)"
-            header = QPushButton(f"▶  {title}   ({g['count']})")
+            count = g["count"]
+            header = QPushButton(f"▶  {title}   ({count})")
             header.setCheckable(True)
             header.setStyleSheet(
                 "QPushButton { text-align: left; padding: 8px 12px;"
@@ -1825,71 +1832,90 @@ class MainWindow(QMainWindow):
             )
             header.setCursor(Qt.CursorShape.PointingHandCursor)
 
-            # Content: an editing table for this cluster's tracks.
+            # Content container — table is built on first expand (lazy).
             content = QWidget()
             content_layout = QVBoxLayout(content)
             content_layout.setContentsMargins(0, 0, 0, 0)
             content_layout.setSpacing(0)
-            group_table = QTableWidget()
-            ncols = E_NUM_COLS + 1  # +1 for the trailing Vicinanza column
-            group_table.setColumnCount(ncols)
-            headers = MainWindow._editing_headers() + [tr("edit_col_vicinanza")]
-            group_table.setHorizontalHeaderLabels(headers)
-            group_table.verticalHeader().setVisible(False)
-            group_table.setEditTriggers(
-                QTableWidget.EditTrigger.DoubleClicked
-                | QTableWidget.EditTrigger.EditKeyPressed
-            )
-            group_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-            group_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectItems)
-            gh = group_table.horizontalHeader()
-            gh.setStretchLastSection(False)
-            gh.setSectionResizeMode(E_COL_PLAYER, QHeaderView.ResizeMode.ResizeToContents)
-            group_table.setColumnWidth(E_COL_FILE, 200)
-            group_table.setColumnWidth(E_COL_TITLE, 230)
-            group_table.setColumnWidth(E_COL_ARTIST, 170)
-            group_table.setColumnWidth(E_COL_ALBUM, 170)
-            group_table.setColumnWidth(E_COL_GENRE, 130)
-            group_table.setColumnWidth(E_COL_HOTCUE, 70)
-            group_table.setColumnWidth(E_COL_LOCATION, 260)
-            group_table.setColumnWidth(E_COL_ACTION, 90)
-            group_table.setColumnWidth(E_COL_DELETE, 100)
-            group_table.setColumnWidth(E_COL_PLAYER, 141)
-            vicinanza_col = E_NUM_COLS  # the +1 column index
-            group_table.setColumnWidth(vicinanza_col, 90)
+            content.setVisible(False)
+            # Stash the group data on the content widget for the lazy builder.
+            content._dup_group = g
+            content._dup_table_built = False
 
-            # Build entries for this group's tracks.
-            group_tracks = [t for t, _s in g["tracks"]]
-            entries = [
-                {"track": t, "title": t.title or "", "artist": t.artist or "",
-                 "album": t.album or "", "genre": t.genre or ""}
-                for t, _s in g["tracks"]
-            ]
-            play_handler = lambda r, T=group_tracks: self._player_play_editing_tracks(r, T)
-            self._populate_editing_entries(
-                entries, table=group_table, play_handler=play_handler, set_global=False)
-            # Fill the Vicinanza column per row.
-            for row, (_t, score) in enumerate(g["tracks"]):
-                vitem = QTableWidgetItem(f"{score}%")
-                vitem.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                # Colour the % like the results score text.
-                vitem.setForeground(score_to_text_color(score))
-                vitem.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-                group_table.setItem(row, vicinanza_col, vitem)
-            group_table.setRowCount(len(entries))  # already set by populate; safe
-            content_layout.addWidget(group_table)
-            content.setVisible(False)  # start collapsed
-
-            def _toggle(checked, hdr=header, cnt=content, ttl=title, count=g["count"]):
+            def _toggle(checked, hdr=header, cnt=content, ttl=title, c=count):
+                if checked and not cnt._dup_table_built:
+                    self._build_one_dup_group_table(cnt)
+                    cnt._dup_table_built = True
                 cnt.setVisible(checked)
                 arrow = "▼" if checked else "▶"
-                hdr.setText(f"{arrow}  {ttl}   ({count})")
+                hdr.setText(f"{arrow}  {ttl}   ({c})")
 
             header.toggled.connect(_toggle)
             group_layout.addWidget(header)
             group_layout.addWidget(content)
 
             vlay.insertWidget(vlay.count() - 1, group_widget)  # before the stretch
+
+    def _build_one_dup_group_table(self, content):
+        """Lazily build the editing table for one accordion group (on first
+        expand). Sizing: the table height fits ALL rows so there is no inner
+        scrollbar."""
+        g = content._dup_group
+        content_layout = content.layout()
+        group_table = QTableWidget()
+        ncols = E_NUM_COLS + 1  # +1 for the trailing Vicinanza column
+        group_table.setColumnCount(ncols)
+        headers = MainWindow._editing_headers() + [tr("edit_col_vicinanza")]
+        group_table.setHorizontalHeaderLabels(headers)
+        group_table.verticalHeader().setVisible(False)
+        group_table.setEditTriggers(
+            QTableWidget.EditTrigger.DoubleClicked
+            | QTableWidget.EditTrigger.EditKeyPressed
+        )
+        group_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        group_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectItems)
+        gh = group_table.horizontalHeader()
+        gh.setStretchLastSection(False)
+        group_table.setColumnWidth(E_COL_FILE, 200)
+        group_table.setColumnWidth(E_COL_TITLE, 230)
+        group_table.setColumnWidth(E_COL_ARTIST, 170)
+        group_table.setColumnWidth(E_COL_ALBUM, 170)
+        group_table.setColumnWidth(E_COL_GENRE, 130)
+        group_table.setColumnWidth(E_COL_HOTCUE, 70)
+        group_table.setColumnWidth(E_COL_LOCATION, 260)
+        group_table.setColumnWidth(E_COL_ACTION, 90)
+        group_table.setColumnWidth(E_COL_DELETE, 100)
+        group_table.setColumnWidth(E_COL_PLAYER, 141)
+        vicinanza_col = E_NUM_COLS
+        group_table.setColumnWidth(vicinanza_col, 90)
+
+        group_tracks = [t for t, _s in g["tracks"]]
+        entries = [
+            {"track": t, "title": t.title or "", "artist": t.artist or "",
+             "album": t.album or "", "genre": t.genre or ""}
+            for t, _s in g["tracks"]
+        ]
+        play_handler = lambda r, T=group_tracks: self._player_play_editing_tracks(r, T)
+        self._populate_editing_entries(
+            entries, table=group_table, play_handler=play_handler, set_global=False)
+        for row, (_t, score) in enumerate(g["tracks"]):
+            vitem = QTableWidgetItem(f"{score}%")
+            vitem.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            vitem.setForeground(score_to_text_color(score))
+            vitem.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            group_table.setItem(row, vicinanza_col, vitem)
+
+        # Fit the table height to ALL rows — no inner scrollbar. The outer
+        # accordion scroll handles the page. Cap at a sane max so a 100-row
+        # group doesn't take the whole screen (it then scrolls internally).
+        n_rows = group_table.rowCount()
+        hh_h = group_table.horizontalHeader().height() + 2
+        total_h = n_rows * 34 + hh_h
+        group_table.setMinimumHeight(min(total_h, 600))
+        group_table.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded if total_h > 600
+            else Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        content_layout.addWidget(group_table)
 
     def _populate_editing_table(self, tracks):
         """Fill the Editing table from a fresh list of library tracks."""
