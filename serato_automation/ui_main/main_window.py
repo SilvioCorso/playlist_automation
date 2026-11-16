@@ -152,27 +152,31 @@ class MainWindow(QMainWindow):
         self._player.play()
 
     def _player_play_editing_row(self, row: int):
-        """Play audio for the given EDITING-table row — stop previous first.
+        """Play audio for the given EDITING-table row (main editing table)."""
+        self._player_play_editing_tracks(row, getattr(self, "_row_tracks", []))
 
-        Mirror of _player_play_row but the filepath comes from self._row_tracks
-        (the editing-table rows) instead of match_results.
+    def _player_play_editing_tracks(self, row: int, tracks):
+        """Play audio for *row* in the EDITING context, using an explicit
+        *tracks* list (so each Advanced-Duplicates accordion group can play its
+        own rows without touching the global self._row_tracks).
         """
         if not self._player_available:
             return
         if (self._player_current_source == "editing"
-                and self._player_current_row == row):
+                and self._player_current_row == row
+                and getattr(self, "_player_editing_tracks", None) is tracks):
             if self._player.playbackState() == QMediaPlayer.PlaybackState.PausedState:
                 self._player.play()
             return
         if self._player_current_row >= 0:
             self._player_stop_current()
-        tracks = getattr(self, "_row_tracks", [])
         if row < 0 or row >= len(tracks):
             return
         track = tracks[row]
         filepath = getattr(track, "filepath", "") or ""
         if not filepath or not os.path.isfile(filepath):
             return
+        self._player_editing_tracks = tracks
         self._player_current_row = row
         self._player_current_source = "editing"
         url = QUrl.fromLocalFile(os.path.abspath(filepath))
@@ -469,6 +473,7 @@ class MainWindow(QMainWindow):
         elif tab_index == 2:
             self._fs_menu.addAction(tr("edit_search_btn"), self._clean_library)
             self._fs_menu.addAction(tr("btn_duplicates"), self._find_duplicates)
+            self._fs_menu.addAction(tr("btn_duplicates_advanced"), self._find_advanced_duplicates)
             self._fs_menu.addSeparator()
             self._fs_menu.addAction(tr("edit_save_all_btn"), self._editing_save_all)
             self._fs_menu.addAction(tr("edit_update_serato_btn"), self._update_serato_database)
@@ -529,6 +534,8 @@ class MainWindow(QMainWindow):
         set_button_alt(self._btn_find_diff, "btn_find_diff_tt")
         self._btn_duplicates.setText(tr("btn_duplicates"))
         set_button_alt(self._btn_duplicates, "btn_duplicates_tt")
+        self._btn_duplicates_adv.setText(tr("btn_duplicates_advanced"))
+        set_button_alt(self._btn_duplicates_adv, "btn_duplicates_advanced_tt")
         self._btn_wizard.setText(tr("btn_wizard"))
         set_button_alt(self._btn_wizard, "btn_wizard_tt")
         self._btn_settings.setText(tr("btn_settings"))
@@ -672,6 +679,12 @@ class MainWindow(QMainWindow):
         set_button_alt(self._btn_duplicates, "btn_duplicates_tt")
         self._btn_duplicates.clicked.connect(self._find_duplicates)
         row1.addWidget(self._btn_duplicates)
+
+        self._btn_duplicates_adv = QPushButton(tr("btn_duplicates_advanced"))
+        self._btn_duplicates_adv.setObjectName("guideBtn")
+        set_button_alt(self._btn_duplicates_adv, "btn_duplicates_advanced_tt")
+        self._btn_duplicates_adv.clicked.connect(self._find_advanced_duplicates)
+        row1.addWidget(self._btn_duplicates_adv)
         row1.addStretch()
         outer.addWidget(maint_w)
 
@@ -973,7 +986,24 @@ class MainWindow(QMainWindow):
         self.editing_table.setColumnWidth(E_COL_DELETE, 100)
         self.editing_table.setColumnWidth(E_COL_PLAYER, 141)
         self._editing_sort = (None, True)
-        ed_layout.addWidget(self.editing_table, stretch=1)
+
+        # Stacked container: page 0 = the flat editing table (used by Easy
+        # Duplicates / Clean Library / Find Differences); page 1 = the Advanced
+        # Duplicates accordion (one collapsible group per fuzzy title cluster).
+        self._editing_stack = QStackedWidget()
+        self._editing_stack.addWidget(self.editing_table)          # page 0
+        self._dup_accordion_scroll = QScrollArea()
+        self._dup_accordion_scroll.setWidgetResizable(True)
+        self._dup_accordion_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._dup_accordion_container = QWidget()
+        self._dup_accordion_vlayout = QVBoxLayout(self._dup_accordion_container)
+        self._dup_accordion_vlayout.setContentsMargins(0, 0, 0, 0)
+        self._dup_accordion_vlayout.setSpacing(6)
+        self._dup_accordion_vlayout.addStretch()  # groups inserted above the stretch
+        self._dup_accordion_scroll.setWidget(self._dup_accordion_container)
+        self._editing_stack.addWidget(self._dup_accordion_scroll)  # page 1
+        self._editing_stack.setCurrentIndex(0)
+        ed_layout.addWidget(self._editing_stack, stretch=1)
 
         return editing_tab
 
@@ -1717,6 +1747,150 @@ class MainWindow(QMainWindow):
         self.tabs.setTabEnabled(2, True)
         self.tabs.setCurrentIndex(2)
 
+    # ------------------------------------------------------------------
+    # Advanced Duplicates (fuzzy title clustering + accordion UI)
+    # ------------------------------------------------------------------
+
+    def _find_advanced_duplicates(self):
+        """Cluster the library by fuzzy title similarity and show one accordion
+        group per cluster (all collapsed), with a similarity % per track."""
+        if not self.library_tracks:
+            QMessageBox.warning(self, tr("title_attention"), tr("msg_scan_first"))
+            return
+
+        def work():
+            from serato_automation.duplicate_finder import find_advanced_duplicates
+            return find_advanced_duplicates(self.library_tracks, min_similarity=80)
+
+        groups = self._run_busy(tr("dup_adv_busy"), work)
+        if not groups:
+            self._editing_mode = ""
+            self.editing_status.setText(tr("dup_adv_none"))
+            QMessageBox.information(
+                self, tr("btn_duplicates_advanced"), tr("dup_adv_none"))
+            return
+
+        self._build_duplicate_accordion(groups)
+        total_tracks = sum(g["count"] for g in groups)
+        self._editing_mode = "duplicates_adv"
+        self.editing_status.setText(
+            tr("dup_adv_status", groups=len(groups), tracks=total_tracks))
+        # Accordion view (page 1) — the flat-table toolbar (Save All / Replace /
+        # Copy / Update Serato) does not apply here: each group has its own
+        # per-row Save / Delete / Player, exactly like the flat editing table.
+        self._editing_stack.setCurrentIndex(1)
+        for btn in (self._btn_edit_save_all, self._btn_edit_replace,
+                    self._btn_edit_copy, self._btn_update_serato):
+            btn.setEnabled(False)
+        self.tabs.setTabEnabled(2, True)
+        self.tabs.setCurrentIndex(2)
+
+    def _clear_duplicate_accordion(self):
+        """Remove all group widgets from the accordion container."""
+        vlay = self._dup_accordion_vlayout
+        while vlay.count() > 1:  # keep the trailing stretch item
+            item = vlay.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+
+    def _build_duplicate_accordion(self, groups):
+        """Populate the accordion with one collapsible group per cluster.
+
+        Each group header shows '▶ title (count)'; clicking expands/collapses an
+        inline editing table (same columns as the flat Editing table + a trailing
+        'Vicinanza' column). All groups start collapsed.
+        """
+        self._clear_duplicate_accordion()
+        vlay = self._dup_accordion_vlayout
+        p = ui_theme.palette()
+
+        for gi, g in enumerate(groups):
+            group_widget = QWidget()
+            group_layout = QVBoxLayout(group_widget)
+            group_layout.setContentsMargins(0, 0, 0, 0)
+            group_layout.setSpacing(0)
+
+            # Header button (toggle).
+            title = g["representative_title"] or "(?)"
+            header = QPushButton(f"▶  {title}   ({g['count']})")
+            header.setCheckable(True)
+            header.setStyleSheet(
+                "QPushButton { text-align: left; padding: 8px 12px;"
+                f" background: {p['panel_alt']}; color: {p['text']};"
+                f" border: 1px solid {p['border']}; border-radius: 6px;"
+                " font-weight: bold; }"
+                f" QPushButton:hover {{ background: {p['panel']}; }}"
+            )
+            header.setCursor(Qt.CursorShape.PointingHandCursor)
+
+            # Content: an editing table for this cluster's tracks.
+            content = QWidget()
+            content_layout = QVBoxLayout(content)
+            content_layout.setContentsMargins(0, 0, 0, 0)
+            content_layout.setSpacing(0)
+            group_table = QTableWidget()
+            ncols = E_NUM_COLS + 1  # +1 for the trailing Vicinanza column
+            group_table.setColumnCount(ncols)
+            headers = MainWindow._editing_headers() + [tr("edit_col_vicinanza")]
+            group_table.setHorizontalHeaderLabels(headers)
+            group_table.verticalHeader().setVisible(False)
+            group_table.setEditTriggers(
+                QTableWidget.EditTrigger.DoubleClicked
+                | QTableWidget.EditTrigger.EditKeyPressed
+            )
+            group_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+            group_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectItems)
+            gh = group_table.horizontalHeader()
+            gh.setStretchLastSection(False)
+            gh.setSectionResizeMode(E_COL_PLAYER, QHeaderView.ResizeMode.ResizeToContents)
+            group_table.setColumnWidth(E_COL_FILE, 200)
+            group_table.setColumnWidth(E_COL_TITLE, 230)
+            group_table.setColumnWidth(E_COL_ARTIST, 170)
+            group_table.setColumnWidth(E_COL_ALBUM, 170)
+            group_table.setColumnWidth(E_COL_GENRE, 130)
+            group_table.setColumnWidth(E_COL_HOTCUE, 70)
+            group_table.setColumnWidth(E_COL_LOCATION, 260)
+            group_table.setColumnWidth(E_COL_ACTION, 90)
+            group_table.setColumnWidth(E_COL_DELETE, 100)
+            group_table.setColumnWidth(E_COL_PLAYER, 141)
+            vicinanza_col = E_NUM_COLS  # the +1 column index
+            group_table.setColumnWidth(vicinanza_col, 90)
+
+            # Build entries for this group's tracks.
+            group_tracks = [t for t, _s in g["tracks"]]
+            entries = [
+                {"track": t, "title": t.title or "", "artist": t.artist or "",
+                 "album": t.album or "", "genre": t.genre or ""}
+                for t, _s in g["tracks"]
+            ]
+            play_handler = lambda r, T=group_tracks: self._player_play_editing_tracks(r, T)
+            self._populate_editing_entries(
+                entries, table=group_table, play_handler=play_handler, set_global=False)
+            # Fill the Vicinanza column per row.
+            for row, (_t, score) in enumerate(g["tracks"]):
+                vitem = QTableWidgetItem(f"{score}%")
+                vitem.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+                # Colour the % like the results score text.
+                vitem.setForeground(score_to_text_color(score))
+                vitem.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+                group_table.setItem(row, vicinanza_col, vitem)
+            group_table.setRowCount(len(entries))  # already set by populate; safe
+            content_layout.addWidget(group_table)
+            content.setVisible(False)  # start collapsed
+
+            def _toggle(checked, hdr=header, cnt=content, ttl=title, count=g["count"]):
+                cnt.setVisible(checked)
+                arrow = "▼" if checked else "▶"
+                hdr.setText(f"{arrow}  {ttl}   ({count})")
+
+            header.toggled.connect(_toggle)
+            group_layout.addWidget(header)
+            group_layout.addWidget(content)
+
+            vlay.insertWidget(vlay.count() - 1, group_widget)  # before the stretch
+
     def _populate_editing_table(self, tracks):
         """Fill the Editing table from a fresh list of library tracks."""
         self._editing_saved_paths = set()
@@ -1729,14 +1903,27 @@ class MainWindow(QMainWindow):
         ]
         self._populate_editing_entries(entries)
         self.editing_table.horizontalHeader().setSortIndicatorShown(True)
+        # Flat-table view (page 0) — make sure the accordion is hidden and the
+        # editing toolbar is enabled.
+        if hasattr(self, "_editing_stack"):
+            self._editing_stack.setCurrentIndex(0)
+            for btn in (self._btn_edit_save_all, self._btn_edit_replace,
+                        self._btn_edit_copy, self._btn_update_serato):
+                btn.setEnabled(len(entries) > 0)
 
-    def _populate_editing_entries(self, entries):
+    def _populate_editing_entries(self, entries, table=None, play_handler=None,
+                                  set_global=True):
         """(Re)build the Editing table rows from entry dicts.
 
         Used by the initial fill and by column sorting (which re-reads the current
         cell values, sorts them, and rebuilds so the button columns stay aligned).
+        Pass *table* to populate a table other than self.editing_table (used by
+        the Advanced Duplicates accordion groups). *play_handler* is the callable
+        used for the per-row PlayerCellWidget.play_requested signal (the accordion
+        passes a closure bound to that group's track list). When *set_global* is
+        False the method does NOT touch self._row_tracks / toolbar buttons.
         """
-        table = self.editing_table
+        table = table or self.editing_table
         # Repopulate destroys every cell widget — stop the player first so the
         # shared QMediaPlayer is not left pointing at a destroyed widget (which
         # would make _on_player_state_changed find None and silently break).
@@ -1744,7 +1931,8 @@ class MainWindow(QMainWindow):
             self._player_stop_current()
         table.setRowCount(0)
         table.setRowCount(len(entries))
-        self._row_tracks = [e["track"] for e in entries]
+        if set_global:
+            self._row_tracks = [e["track"] for e in entries]
         saved = getattr(self, "_editing_saved_paths", set())
         saved_hex = "#1a3325" if self._is_dark_theme() else "#eafaf1"
 
@@ -1789,7 +1977,7 @@ class MainWindow(QMainWindow):
             btn = QPushButton(tr("edit_confirm_btn"))
             btn.setObjectName("successBtn")
             btn.clicked.connect(
-                lambda _=False, r=row, t=track: self._editing_confirm_row(r, t)
+                lambda _=False, r=row, t=track, tbl=table: self._editing_confirm_row(r, t, tbl)
             )
             table.setCellWidget(row, E_COL_ACTION, btn)
 
@@ -1812,7 +2000,7 @@ class MainWindow(QMainWindow):
                 pw = PlayerCellWidget(row)
                 pw.set_has_file(True)
                 pw.set_track_name(track.display_name or os.path.basename(epath))
-                pw.play_requested.connect(self._player_play_editing_row)
+                pw.play_requested.connect(play_handler or self._player_play_editing_row)
                 pw.pause_requested.connect(self._player_pause)
                 pw.seek_requested.connect(self._player_seek)
                 table.setCellWidget(row, E_COL_PLAYER, pw)
@@ -1825,12 +2013,13 @@ class MainWindow(QMainWindow):
 
             table.setRowHeight(row, 34)
 
-        has_rows = len(entries) > 0
-        self._btn_edit_save_all.setEnabled(has_rows)
-        self._btn_edit_replace.setEnabled(has_rows)
-        self._btn_edit_copy.setEnabled(has_rows)
-        self._btn_update_serato.setEnabled(has_rows)
-        self.editing_status.setText(tr("edit_status_count", count=len(entries)))
+        if set_global:
+            has_rows = len(entries) > 0
+            self._btn_edit_save_all.setEnabled(has_rows)
+            self._btn_edit_replace.setEnabled(has_rows)
+            self._btn_edit_copy.setEnabled(has_rows)
+            self._btn_update_serato.setEnabled(has_rows)
+            self.editing_status.setText(tr("edit_status_count", count=len(entries)))
 
     def _capture_editing_entries(self):
         """Read the current cell values (including unsaved edits) into entries."""
@@ -1879,8 +2068,8 @@ class MainWindow(QMainWindow):
         order = Qt.SortOrder.AscendingOrder if ascending else Qt.SortOrder.DescendingOrder
         self.editing_table.horizontalHeader().setSortIndicator(col, order)
 
-    def _row_values(self, row):
-        table = self.editing_table
+    def _row_values(self, row, table=None):
+        table = table or self.editing_table
         def _txt(col):
             it = table.item(row, col)
             return it.text() if it is not None else ""
@@ -1921,13 +2110,15 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-    def _write_editing_row(self, row, track):
+    def _write_editing_row(self, row, track, table=None):
         """Write one row's tags to disk and refresh its visuals.
 
         Returns ``(ok, msg)``; does NOT touch the cache or show dialogs so it can
-        be reused both by the per-row button and the 'Save all' action.
+        be reused both by the per-row button and the 'Save all' action. Pass
+        *table* when the row lives in a table other than self.editing_table
+        (e.g. an Advanced Duplicates accordion group).
         """
-        new_title, new_artist, new_album, new_genre = self._row_values(row)
+        new_title, new_artist, new_album, new_genre = self._row_values(row, table)
 
         # Release the audio player if it currently holds this file (Windows would
         # otherwise lock it and the tag write would fail).
@@ -1953,7 +2144,7 @@ class MainWindow(QMainWindow):
             self._editing_saved_paths = set()
         self._editing_saved_paths.add(track.filepath or "")
 
-        table = self.editing_table
+        table = table or self.editing_table
         color = QColor("#1a3325" if self._is_dark_theme() else "#eafaf1")
         for col in (E_COL_FILE,) + E_EDITABLE_COLS:
             it = table.item(row, col)
@@ -1969,8 +2160,8 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-    def _editing_confirm_row(self, row, track):
-        ok, msg = self._write_editing_row(row, track)
+    def _editing_confirm_row(self, row, track, table=None):
+        ok, msg = self._write_editing_row(row, track, table)
         if not ok:
             QMessageBox.critical(
                 self, tr("title_error"), tr("edit_saved_err", error=msg)
@@ -2058,8 +2249,13 @@ class MainWindow(QMainWindow):
         # In the Duplicates view, re-run the duplicate scan so the table always
         # reflects the current library (a track may stop being a duplicate once
         # its twin is deleted). Otherwise just drop this row from the table.
-        if getattr(self, "_editing_mode", "") == "duplicates":
+        mode = getattr(self, "_editing_mode", "")
+        if mode == "duplicates":
             self._find_duplicates()
+        elif mode == "duplicates_adv":
+            # Re-cluster and rebuild the accordion (the deleted track may have
+            # broken a cluster or reduced it below the 2-member threshold).
+            self._find_advanced_duplicates()
         else:
             entries = [e for e in self._capture_editing_entries()
                        if e["track"] is not track]
