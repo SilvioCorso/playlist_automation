@@ -340,12 +340,18 @@ class PlayerCellWidget(QWidget):
     pause_requested = Signal()
     seek_requested = Signal(int)   # position (ms)
 
-    def __init__(self, row: int, parent=None):
+    def __init__(self, row: int, parent=None, main_window=None):
         super().__init__(parent)
         self.row = row
         self._is_playing = False
         self._has_file = False
         self._track_name = ""
+        # Weak-ish ref to the MainWindow so the widget can register itself as
+        # the active player widget BEFORE emitting play_requested. This avoids
+        # relying on Qt's sender() inside a lambda slot (which returns None for
+        # accordion group tables — the Advanced Duplicates player was broken
+        # exactly because of that).
+        self._main_window = main_window
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(2, 0, 4, 0)
@@ -403,6 +409,19 @@ class PlayerCellWidget(QWidget):
         if self._is_playing:
             self.pause_requested.emit()
         else:
+            # Stash a reference to ourselves BEFORE emitting play_requested.
+            # The controller reads it AFTER _player_stop_current (which clears
+            # _player_active_widget) and assigns it as the active widget — so
+            # state/position updates reach this widget without relying on
+            # sender() (which returns None through the lambda slot used by
+            # Advanced Duplicates accordion tables — the accordion player was
+            # broken because of exactly that).
+            mw = self._main_window
+            if mw is not None:
+                try:
+                    mw._pending_player_widget = self
+                except Exception:
+                    pass
             self.play_requested.emit(self.row)
 
     def _on_slider_moved(self, position):

@@ -1081,12 +1081,11 @@ class ResultsTable(QTableWidget):
                 has_playable = True
 
         if has_playable:
-            player_widget = PlayerCellWidget(row)
+            mw = self._main_window_ref
+            player_widget = PlayerCellWidget(row, main_window=mw)
             player_widget.set_has_file(True)
             track_name = result.library_track.display_name or os.path.basename(filepath)
             player_widget.set_track_name(track_name)
-            # Connect signals to main window player controller
-            mw = self._main_window_ref
             if mw:
                 player_widget.play_requested.connect(mw._player_play_row)
                 player_widget.pause_requested.connect(mw._player_pause)

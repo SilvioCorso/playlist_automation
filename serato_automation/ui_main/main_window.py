@@ -190,10 +190,10 @@ class MainWindow(QMainWindow):
             return
         self._player_current_row = row
         self._player_current_source = "results"
-        # Capture the widget directly (sender() = the PlayerCellWidget that
-        # emitted play_requested) so state/position updates don't depend on a
-        # row/source lookup that could miss.
-        self._player_active_widget = self.sender() or self.results_table.get_player_widget(row)
+        # Pick up the widget the PlayerCellWidget stashed before emitting (so we
+        # don't depend on sender() — returns None through the accordion lambda).
+        self._player_active_widget = getattr(self, "_pending_player_widget", None) or self.sender() or self.results_table.get_player_widget(row)
+        self._pending_player_widget = None
         url = QUrl.fromLocalFile(os.path.abspath(filepath))
         self._player.setSource(url)
         self._player.play()
@@ -226,10 +226,12 @@ class MainWindow(QMainWindow):
         self._player_editing_tracks = tracks
         self._player_current_row = row
         self._player_current_source = "editing"
-        # Capture the widget directly (sender() = the PlayerCellWidget that
-        # emitted play_requested — works for the main editing table AND for any
-        # Advanced-Duplicates accordion group table).
-        self._player_active_widget = self.sender()
+        # Pick up the widget the PlayerCellWidget stashed before emitting —
+        # works for the main editing table AND for any Advanced-Duplicates
+        # accordion group table (where the play_handler is a lambda and
+        # sender() would return None).
+        self._player_active_widget = getattr(self, "_pending_player_widget", None) or self.sender()
+        self._pending_player_widget = None
         url = QUrl.fromLocalFile(os.path.abspath(filepath))
         self._player.setSource(url)
         self._player.play()
@@ -1048,6 +1050,7 @@ class MainWindow(QMainWindow):
         self.editing_table.setColumnWidth(E_COL_ARTIST, 170)
         self.editing_table.setColumnWidth(E_COL_ALBUM, 170)
         self.editing_table.setColumnWidth(E_COL_GENRE, 130)
+        self.editing_table.setColumnWidth(E_COL_BPM, 60)
         self.editing_table.setColumnWidth(E_COL_HOTCUE, 70)
         self.editing_table.setColumnWidth(E_COL_LOCATION, 260)
         self.editing_table.setColumnWidth(E_COL_ACTION, 90)
@@ -1102,6 +1105,7 @@ class MainWindow(QMainWindow):
             tr("edit_col_artist"),
             tr("edit_col_album"),
             tr("edit_col_genre"),
+            tr("edit_col_bpm"),
             tr("edit_col_hotcue"),
             tr("edit_col_location"),
             tr("edit_col_action"),
@@ -1989,6 +1993,7 @@ class MainWindow(QMainWindow):
         group_table.setColumnWidth(E_COL_ARTIST, 170)
         group_table.setColumnWidth(E_COL_ALBUM, 170)
         group_table.setColumnWidth(E_COL_GENRE, 130)
+        group_table.setColumnWidth(E_COL_BPM, 60)
         group_table.setColumnWidth(E_COL_HOTCUE, 70)
         group_table.setColumnWidth(E_COL_LOCATION, 260)
         group_table.setColumnWidth(E_COL_ACTION, 90)
@@ -2087,6 +2092,13 @@ class MainWindow(QMainWindow):
                 )
                 table.setItem(row, col, item)
 
+            # BPM — read-only (display the track's BPM tag or '-').
+            bpm_val = (getattr(track, "bpm", "") or "").strip()
+            bpm_item = QTableWidgetItem(bpm_val if bpm_val else "-")
+            bpm_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            bpm_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            table.setItem(row, E_COL_BPM, bpm_item)
+
             hc = self._hotcue_count(track.filepath or "")
             hc_item = QTableWidgetItem("?" if hc is None else str(hc))
             hc_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -2131,7 +2143,7 @@ class MainWindow(QMainWindow):
             # row playing in the Results table, and vice versa).
             epath = track.filepath or ""
             if epath and os.path.isfile(epath):
-                pw = PlayerCellWidget(row)
+                pw = PlayerCellWidget(row, main_window=self)
                 pw.set_has_file(True)
                 pw.set_track_name(track.display_name or os.path.basename(epath))
                 pw.play_requested.connect(play_handler or self._player_play_editing_row)
