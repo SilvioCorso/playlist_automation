@@ -45,6 +45,7 @@ class LibraryTrack:
     bpm: str = ""
     key: str = ""
     comment: str = ""
+    label: str = ""
     composer: str = ""
     year: str = ""
     duration: float = 0.0
@@ -343,7 +344,7 @@ class LibraryReader:
         ext = os.path.splitext(filepath)[1].lower()
         info = {
             'title': '', 'artist': '', 'album': '', 'genre': '',
-            'bpm': '', 'key': '', 'comment': '', 'composer': '', 'year': '',
+            'bpm': '', 'key': '', 'comment': '', 'label': '', 'composer': '', 'year': '',
             'duration': 0.0, 'bitrate': 0
         }
 
@@ -394,7 +395,7 @@ class LibraryReader:
         return LibraryTrack(
             title=info['title'], artist=info['artist'], album=info['album'],
             genre=info['genre'], bpm=info['bpm'], key=info['key'],
-            comment=info['comment'], composer=info['composer'], year=info['year'],
+            comment=info['comment'], label=info['label'], composer=info['composer'], year=info['year'],
             duration=info['duration'], filepath=filepath,
             file_size=os.path.getsize(filepath), bitrate=info['bitrate']
         )
@@ -461,6 +462,13 @@ class LibraryReader:
         # STEP 6: Comment
         info['comment'] = self._read_comment_id3(raw_id3)
 
+        # STEP 6b: Label (TPUB = publisher/label in ID3)
+        try:
+            if 'TPUB' in raw_id3:
+                info['label'] = str(raw_id3['TPUB']).strip()
+        except Exception:
+            pass
+
         # STEP 7: Composer
         info['composer'] = self._read_composer_id3(raw_id3)
 
@@ -509,6 +517,16 @@ class LibraryReader:
                 if tag in audio:
                     try:
                         info['comment'] = str(audio[tag][0]).strip()
+                        break
+                    except (IndexError, AttributeError):
+                        pass
+
+        # Label (publisher) for FLAC/OGG
+        if not info['label']:
+            for tag in ['label', 'LABEL', 'publisher', 'PUBLISHER']:
+                if tag in audio:
+                    try:
+                        info['label'] = str(audio[tag][0]).strip()
                         break
                     except (IndexError, AttributeError):
                         pass

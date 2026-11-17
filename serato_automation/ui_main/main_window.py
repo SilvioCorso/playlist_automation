@@ -1116,6 +1116,8 @@ class MainWindow(QMainWindow):
         self.editing_table.setColumnWidth(E_COL_ALBUM, 170)
         self.editing_table.setColumnWidth(E_COL_GENRE, 130)
         self.editing_table.setColumnWidth(E_COL_BPM, 60)
+        self.editing_table.setColumnWidth(E_COL_LABEL, 120)
+        self.editing_table.setColumnWidth(E_COL_COMMENT, 150)
         self.editing_table.setColumnWidth(E_COL_HOTCUE, 70)
         self.editing_table.setColumnWidth(E_COL_LOCATION, 260)
         self.editing_table.setColumnWidth(E_COL_ACTION, 90)
@@ -1166,6 +1168,8 @@ class MainWindow(QMainWindow):
             tr("edit_col_album"),
             tr("edit_col_genre"),
             tr("edit_col_bpm"),
+            tr("edit_col_label"),
+            tr("edit_col_comment"),
             tr("edit_col_hotcue"),
             tr("edit_col_location"),
             tr("edit_col_action"),
@@ -2195,6 +2199,8 @@ class MainWindow(QMainWindow):
         group_table.setColumnWidth(E_COL_ALBUM, 170)
         group_table.setColumnWidth(E_COL_GENRE, 130)
         group_table.setColumnWidth(E_COL_BPM, 60)
+        group_table.setColumnWidth(E_COL_LABEL, 120)
+        group_table.setColumnWidth(E_COL_COMMENT, 150)
         group_table.setColumnWidth(E_COL_HOTCUE, 70)
         group_table.setColumnWidth(E_COL_LOCATION, 260)
         group_table.setColumnWidth(E_COL_ACTION, 90)
@@ -2389,6 +2395,18 @@ class MainWindow(QMainWindow):
             bpm_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             bpm_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
             table.setItem(row, E_COL_BPM, bpm_item)
+
+            # Label — read-only
+            label_val = (getattr(track, "label", "") or "").strip()
+            label_item = QTableWidgetItem(label_val if label_val else "-")
+            label_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            table.setItem(row, E_COL_LABEL, label_item)
+
+            # Comment — read-only
+            comment_val = (getattr(track, "comment", "") or "").strip()
+            comment_item = QTableWidgetItem(comment_val if comment_val else "-")
+            comment_item.setFlags(Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            table.setItem(row, E_COL_COMMENT, comment_item)
 
             hc = self._hotcue_count(track.filepath or "")
             hc_item = QTableWidgetItem("?" if hc is None else str(hc))
