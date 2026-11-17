@@ -1111,12 +1111,22 @@ class MainWindow(QMainWindow):
 
     def _all_editing_tables(self):
         """All QTableWidgets that share the editing column layout: the flat
-        editing table + every Advanced-Duplicates accordion group table."""
+        editing table + every Advanced-Duplicates accordion group table.
+
+        Filters out any table whose underlying C++ object has been destroyed
+        (a Python ref can outlive the Qt widget after deleteLater)."""
         tables = []
         if hasattr(self, "editing_table"):
             tables.append(self.editing_table)
         tables.extend(getattr(self, "_dup_group_tables", []))
-        return tables
+        live = []
+        for t in tables:
+            try:
+                _ = t.horizontalHeader()
+                live.append(t)
+            except Exception:
+                continue  # destroyed — skip
+        return live
 
     def _schedule_save_editing_columns(self, source=None, *_args):
         if getattr(self, "_restoring_editing_cols", False):
@@ -1133,6 +1143,19 @@ class MainWindow(QMainWindow):
         if src is None:
             src = self.editing_table if hasattr(self, "editing_table") else None
         if src is None:
+            return
+        # Guard: the source table may have been destroyed (e.g. an accordion
+        # group was cleared/rebuilt after a delete + re-click). Accessing a
+        # deleted C++ object raises RuntimeError in PySide6 -> skip silently.
+        try:
+            _ = src.horizontalHeader()
+        except Exception:
+            self._editing_cols_source = None
+            return
+        # Only act on tables that are still tracked (live).
+        live = self._all_editing_tables()
+        if src not in live:
+            self._editing_cols_source = None
             return
         self._save_editing_layout_from(src)
         self._propagate_editing_layout(exclude=src)
@@ -1961,7 +1984,22 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentIndex(2)
 
     def _clear_duplicate_accordion(self):
-        """Remove all group widgets from the accordion container."""
+        """Remove all group widgets from the accordion container.
+
+        Stops the column-layout timer + clears the tracked tables FIRST so the
+        debounced save handler can't fire against widgets that are about to be
+        destroyed (which crashed/froze the UI when the user re-clicked Advanced
+        Duplicates right after a delete).
+        """
+        # Stop any pending column-layout save and drop references to the group
+        # tables that are about to be deleted.
+        if hasattr(self, "_editing_cols_timer"):
+            try:
+                self._editing_cols_timer.stop()
+            except Exception:
+                pass
+        self._editing_cols_source = None
+        self._dup_group_tables = []
         vlay = self._dup_accordion_vlayout
         while vlay.count() > 1:  # keep the trailing stretch item
             item = vlay.takeAt(0)
@@ -1983,8 +2021,7 @@ class MainWindow(QMainWindow):
         is set to fit ALL its rows so there is no inner scrollbar — the outer
         accordion scroll handles the page.
         """
-        self._clear_duplicate_accordion()
-        self._dup_group_tables = []   # rebuilt below as each group is created
+        self._clear_duplicate_accordion()   # also resets _dup_group_tables + stops the layout timer
         vlay = self._dup_accordion_vlayout
         p = ui_theme.palette()
 
@@ -2129,6 +2166,15 @@ class MainWindow(QMainWindow):
             # Fallback (shouldn't happen): full re-cluster.
             self._find_advanced_duplicates()
             return
+        # Stop the column-layout timer so it can't fire against the old table
+        # while/after we rebuild it (resize events during rebuild would start it
+        # with a source that's about to be destroyed).
+        if hasattr(self, "_editing_cols_timer"):
+            try:
+                self._editing_cols_timer.stop()
+            except Exception:
+                pass
+        self._editing_cols_source = None
         content = table._dup_content
         g = table._dup_group_data
         # Drop the deleted track from this group's data.
