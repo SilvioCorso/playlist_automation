@@ -44,6 +44,7 @@ from .constants import *
 from .styles import *
 from .helpers import *
 from .widgets import *
+from .workers import *
 
 class FormatGuideDialog(QDialog):
     def __init__(self, parent=None, theme: str = "light"):
