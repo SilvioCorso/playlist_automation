@@ -56,6 +56,7 @@ DEFAULT_CONFIG = {
     },
     "table_fit_columns": False,
     "license_pro": False,          # placeholder — set True when licensing backend validates
+    "dup_adv_show_versioned": False,  # Advanced Duplicates: also show (v1)/(v2)/... versioned groups
 }
 
 # Default paths for Windows

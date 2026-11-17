@@ -606,6 +606,9 @@ class MainWindow(QMainWindow):
         set_button_alt(self._btn_duplicates, "btn_duplicates_tt")
         self._btn_duplicates_adv.setText(tr("btn_duplicates_advanced"))
         set_button_alt(self._btn_duplicates_adv, "btn_duplicates_advanced_tt")
+        if hasattr(self, "_chk_dup_versioned"):
+            self._chk_dup_versioned.setText(tr("dup_adv_show_versioned"))
+            self._chk_dup_versioned.setToolTip(tr("dup_adv_show_versioned_tt"))
         self._btn_wizard.setText(tr("btn_wizard"))
         set_button_alt(self._btn_wizard, "btn_wizard_tt")
         self._btn_settings.setText(tr("btn_settings"))
@@ -656,8 +659,11 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_fs_menu_btn"):
             self._fs_menu_btn.setText(tr("btn_fs_menu"))
         self.tabs.setTabText(0, tr("tab_playlist"))
+        self.tabs.setTabToolTip(0, tr("tab_playlist_tt"))
         self.tabs.setTabText(1, tr("tab_results"))
+        self.tabs.setTabToolTip(1, tr("tab_results_tt"))
         self.tabs.setTabText(2, tr("tab_editing"))
+        self.tabs.setTabToolTip(2, tr("tab_editing_tt"))
         self.results_table.retranslate_headers()
         if self.match_results:
             self.results_table.retranslate_content()
@@ -665,8 +671,11 @@ class MainWindow(QMainWindow):
             self.editing_table.setHorizontalHeaderLabels(self._editing_headers())
             self._btn_edit_search.setText(tr("edit_search_btn"))
             self._btn_edit_replace.setText(tr("edit_replace_btn"))
+            set_button_alt(self._btn_edit_replace, "edit_replace_btn_tt")
             self._btn_edit_copy.setText(tr("edit_copy_list_btn"))
+            set_button_alt(self._btn_edit_copy, "edit_copy_list_btn_tt")
             self._btn_edit_save_all.setText(tr("edit_save_all_btn"))
+            set_button_alt(self._btn_edit_save_all, "edit_save_all_btn_tt")
             self._btn_update_serato.setText(tr("edit_update_serato_btn"))
             set_button_alt(self._btn_update_serato, "edit_update_serato_tt")
             if self.editing_table.rowCount() == 0:
@@ -755,6 +764,13 @@ class MainWindow(QMainWindow):
         set_button_alt(self._btn_duplicates_adv, "btn_duplicates_advanced_tt")
         self._btn_duplicates_adv.clicked.connect(self._find_advanced_duplicates)
         row1.addWidget(self._btn_duplicates_adv)
+
+        # Checkbox: include (v1)/(v2)/(v3) versioned duplicates (default OFF).
+        self._chk_dup_versioned = QCheckBox(tr("dup_adv_show_versioned"))
+        self._chk_dup_versioned.setToolTip(tr("dup_adv_show_versioned_tt"))
+        self._chk_dup_versioned.setChecked(bool(self.config.get("dup_adv_show_versioned", False)))
+        self._chk_dup_versioned.toggled.connect(self._on_dup_versioned_toggled)
+        row1.addWidget(self._chk_dup_versioned)
         row1.addStretch()
         outer.addWidget(maint_w)
 
@@ -843,7 +859,8 @@ class MainWindow(QMainWindow):
         match_row.addStretch()
         pl_layout.addLayout(match_row)
 
-        tabs.addTab(playlist_tab, tr("tab_playlist"))
+        _i = tabs.addTab(playlist_tab, tr("tab_playlist"))
+        tabs.setTabToolTip(_i, tr("tab_playlist_tt"))
 
         # --- Results tab ---
         results_tab = QWidget()
@@ -964,11 +981,13 @@ class MainWindow(QMainWindow):
         self.results_table.lock_changed_signal.connect(self._on_lock_changed)
         rl_layout.addWidget(self.results_table, stretch=1)
 
-        tabs.addTab(results_tab, tr("tab_results"))
+        _i = tabs.addTab(results_tab, tr("tab_results"))
+        tabs.setTabToolTip(_i, tr("tab_results_tt"))
         tabs.setTabEnabled(1, False)
 
         # --- Editing tab (library cleanup) ---
-        tabs.addTab(self._build_editing_tab(), tr("tab_editing"))
+        _i = tabs.addTab(self._build_editing_tab(), tr("tab_editing"))
+        tabs.setTabToolTip(_i, tr("tab_editing_tt"))
         tabs.setTabEnabled(2, False)
 
         return tabs
@@ -993,18 +1012,21 @@ class MainWindow(QMainWindow):
         top.addWidget(self._btn_edit_search)
 
         self._btn_edit_replace = QPushButton(tr("edit_replace_btn"))
+        set_button_alt(self._btn_edit_replace, "edit_replace_btn_tt")
         self._btn_edit_replace.clicked.connect(self._editing_replace)
         self._btn_edit_replace.setEnabled(False)
         top.addWidget(self._btn_edit_replace)
 
         self._btn_edit_copy = QPushButton(tr("edit_copy_list_btn"))
         self._btn_edit_copy.setObjectName("copyBtn")
+        set_button_alt(self._btn_edit_copy, "edit_copy_list_btn_tt")
         self._btn_edit_copy.clicked.connect(self._editing_copy_list)
         self._btn_edit_copy.setEnabled(False)
         top.addWidget(self._btn_edit_copy)
 
         self._btn_edit_save_all = QPushButton(tr("edit_save_all_btn"))
         self._btn_edit_save_all.setObjectName("successBtn")
+        set_button_alt(self._btn_edit_save_all, "edit_save_all_btn_tt")
         self._btn_edit_save_all.clicked.connect(self._editing_save_all)
         self._btn_edit_save_all.setEnabled(False)
         top.addWidget(self._btn_edit_save_all)
@@ -1949,6 +1971,17 @@ class MainWindow(QMainWindow):
     # Advanced Duplicates (fuzzy title clustering + accordion UI)
     # ------------------------------------------------------------------
 
+    def _on_dup_versioned_toggled(self, checked):
+        """Persist the 'show versioned duplicates' checkbox and re-run the scan
+        so the accordion reflects the new setting immediately."""
+        self.config["dup_adv_show_versioned"] = bool(checked)
+        try:
+            save_config(self.config)
+        except Exception:
+            pass
+        if getattr(self, "_editing_mode", "") == "duplicates_adv":
+            self._find_advanced_duplicates()
+
     def _find_advanced_duplicates(self):
         """Cluster the library by fuzzy title similarity and show one accordion
         group per cluster (all collapsed), with a similarity % per track."""
@@ -1956,9 +1989,12 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, tr("title_attention"), tr("msg_scan_first"))
             return
 
+        show_versioned = bool(self.config.get("dup_adv_show_versioned", False))
+
         def work():
             from serato_automation.duplicate_finder import find_advanced_duplicates
-            return find_advanced_duplicates(self.library_tracks, min_similarity=80)
+            return find_advanced_duplicates(self.library_tracks, min_similarity=80,
+                                            show_versioned=show_versioned)
 
         groups = self._run_busy(tr("dup_adv_busy"), work)
         if not groups:
@@ -2044,6 +2080,7 @@ class MainWindow(QMainWindow):
                 f" QPushButton:hover {{ background: {p['panel']}; }}"
             )
             header.setCursor(Qt.CursorShape.PointingHandCursor)
+            header.setToolTip(tr("dup_adv_accordion_tt"))
 
             # Content container — table is built on first expand (lazy).
             content = QWidget()

@@ -73,9 +73,35 @@ def _segments_normalized(raw_title: str) -> set:
     return segs
 
 
+_VERSION_RE = re.compile(r"\(\s*v\s*\d+\s*\)", re.IGNORECASE)
+
+
+def _is_versioned_group(raw_titles: List[str]) -> bool:
+    """A group is 'versioned duplicates' when every member's title differs
+    ONLY by a (vN) version tag — i.e. after stripping '(v1)','(v2)',... the
+    titles normalise to the same string. Such groups are intentional versions
+    (the user deliberately kept multiple rips), not real duplicates.
+
+    The check runs on the RAW titles because _dup_norm already strips ALL
+    parentheticals (including the version tag), so the (vN) marker would be
+    gone by the time we look at the normalised form.
+    """
+    if not raw_titles:
+        return False
+    # At least one member must carry a (vN) version tag.
+    if not any(_VERSION_RE.search(rt or "") for rt in raw_titles):
+        return False
+    stripped = [_dup_norm(_VERSION_RE.sub("", rt or "")) for rt in raw_titles]
+    first = stripped[0]
+    if not first:
+        return False
+    return all(s == first for s in stripped)
+
+
 def find_advanced_duplicates(
     tracks: List[LibraryTrack],
     min_similarity: int = 75,
+    show_versioned: bool = False,
 ) -> List[Dict]:
     """Cluster *tracks* whose normalised title is a substring of another's.
 
@@ -203,6 +229,15 @@ def find_advanced_duplicates(
                 score = 95
             members_scored.append((t, score))
         members_scored.sort(key=lambda x: -x[1])
+
+        # Versioned-duplicates exclusion: if every member differs only by a
+        # (vN) version tag, the group is intentional versions, not real
+        # duplicates -> skip unless the user opted to show them.
+        if not show_versioned:
+            member_raws = [items[m][0].title or "" for m in members]
+            if _is_versioned_group(member_raws):
+                continue
+
         groups.append({
             "representative_title": rep_title,
             "count": len(members_scored),
