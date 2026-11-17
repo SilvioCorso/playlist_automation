@@ -2017,6 +2017,7 @@ class MainWindow(QMainWindow):
             # Stash the group data on the content widget for the lazy builder.
             content._dup_group = g
             content._dup_table_built = False
+            content._dup_header = header   # so a row delete can refresh the count
 
             def _toggle(checked, hdr=header, cnt=content, ttl=title, c=count):
                 if checked and not cnt._dup_table_built:
@@ -2039,6 +2040,10 @@ class MainWindow(QMainWindow):
         g = content._dup_group
         content_layout = content.layout()
         group_table = QTableWidget()
+        # Track the group context on the table so a row delete can rebuild just
+        # this group (keeping the accordion open) instead of re-clustering all.
+        group_table._dup_content = content
+        group_table._dup_group_data = g
         ncols = E_NUM_COLS + 1  # +1 for the trailing Vicinanza column
         group_table.setColumnCount(ncols)
         headers = MainWindow._editing_headers() + [tr("edit_col_vicinanza")]
@@ -2098,18 +2103,64 @@ class MainWindow(QMainWindow):
 
         # Vertical scrollbar: OFF when the group has <= 5 rows (all rows fit
         # comfortably, no inner scroll); ON only when duplicates exceed 5 so a
-        # big group doesn't take the whole screen.
+        # big group doesn't take the whole screen. The +18 px on the height
+        # reserves space for the horizontal scrollbar (when columns overflow the
+        # table width) so it never overlaps/covers the last row.
         n_rows = group_table.rowCount()
         hh_h = group_table.horizontalHeader().height() + 2
         row_h = 34
+        pad = 18
         if n_rows <= 5:
-            group_table.setMinimumHeight(n_rows * row_h + hh_h)
+            group_table.setMinimumHeight(n_rows * row_h + hh_h + pad)
             group_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         else:
             # cap at 5 visible rows + header, inner scroll for the rest
-            group_table.setMinimumHeight(5 * row_h + hh_h)
+            group_table.setMinimumHeight(5 * row_h + hh_h + pad)
             group_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         content_layout.addWidget(group_table)
+
+    def _rebuild_dup_group_after_delete(self, table, track):
+        """After a row delete in an Advanced-Duplicates accordion group, rebuild
+        JUST that group (keeping the accordion open) instead of re-clustering
+        everything. The deleted track is dropped from the group's data; if the
+        group falls below 2 members the whole group widget is removed.
+        """
+        if table is None or not hasattr(table, "_dup_content"):
+            # Fallback (shouldn't happen): full re-cluster.
+            self._find_advanced_duplicates()
+            return
+        content = table._dup_content
+        g = table._dup_group_data
+        # Drop the deleted track from this group's data.
+        g["tracks"] = [(t, s) for (t, s) in g["tracks"] if t is not track]
+        g["count"] = len(g["tracks"])
+        # Remove the old table from the tracking list.
+        if hasattr(self, "_dup_group_tables"):
+            self._dup_group_tables = [t for t in self._dup_group_tables if t is not table]
+        if g["count"] < 2:
+            # Group no longer has duplicates -> remove the whole group widget.
+            gw = content.parentWidget()
+            if gw is not None:
+                gw.setParent(None)
+                gw.deleteLater()
+            return
+        # Rebuild the group's table with the remaining tracks (keeps indices +
+        # player wiring consistent). Remove the old table widget first.
+        layout = content.layout()
+        while layout.count():
+            it = layout.takeAt(0)
+            w = it.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        content._dup_table_built = False
+        self._build_one_dup_group_table(content)
+        content._dup_table_built = True
+        content.setVisible(True)  # keep the group expanded
+        hdr = getattr(content, "_dup_header", None)
+        if hdr is not None:
+            ttl = g["representative_title"] or "(?)"
+            hdr.setText(f"▼  {ttl}   ({g['count']})")
 
     def _populate_editing_table(self, tracks):
         """Fill the Editing table from a fresh list of library tracks."""
@@ -2215,7 +2266,7 @@ class MainWindow(QMainWindow):
                 " QPushButton:hover { background: #e74c3c; }"
             )
             del_btn.clicked.connect(
-                lambda _=False, t=track: self._editing_delete_row(t)
+                lambda _=False, t=track, tbl=table, r=row: self._editing_delete_row(t, table=tbl, row=r)
             )
             table.setCellWidget(row, E_COL_DELETE, del_btn)
 
@@ -2398,7 +2449,7 @@ class MainWindow(QMainWindow):
         name = f"{track.artist} - {track.title}".strip(" -")
         self.statusBar().showMessage(tr("edit_saved_ok", name=name))
 
-    def _editing_delete_row(self, track):
+    def _editing_delete_row(self, track, table=None, row=None):
         """Send the track's file to the Recycle Bin and purge it from Serato.
 
         Cleans Serato thoroughly: removes the entry from the ``database V2`` AND
@@ -2480,9 +2531,13 @@ class MainWindow(QMainWindow):
         if mode == "duplicates":
             self._find_duplicates()
         elif mode == "duplicates_adv":
-            # Re-cluster and rebuild the accordion (the deleted track may have
-            # broken a cluster or reduced it below the 2-member threshold).
-            self._find_advanced_duplicates()
+            # Local removal: rebuild just the affected group (keeping the
+            # accordion open) instead of re-clustering everything — the full
+            # re-cluster closed every accordion AND destroyed the delete button
+            # mid-signal, freezing the UI. Deferred via singleShot(0) so the
+            # button's signal handler completes before its widget is rebuilt.
+            src = table if (table is not None and hasattr(table, "_dup_content")) else None
+            QTimer.singleShot(0, lambda: self._rebuild_dup_group_after_delete(src, track))
         else:
             entries = [e for e in self._capture_editing_entries()
                        if e["track"] is not track]
