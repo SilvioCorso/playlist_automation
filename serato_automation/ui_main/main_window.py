@@ -2025,7 +2025,9 @@ class MainWindow(QMainWindow):
         Stops the column-layout timer + clears the tracked tables FIRST so the
         debounced save handler can't fire against widgets that are about to be
         destroyed (which crashed/froze the UI when the user re-clicked Advanced
-        Duplicates right after a delete).
+        Duplicates right after a delete). Also bumps the dup_adv generation so
+        any deferred singleShot rebuild from a prior delete cancels itself
+        (the accordion it was meant to patch no longer exists).
         """
         # Stop any pending column-layout save and drop references to the group
         # tables that are about to be deleted.
@@ -2036,6 +2038,9 @@ class MainWindow(QMainWindow):
                 pass
         self._editing_cols_source = None
         self._dup_group_tables = []
+        # Bump the generation: deferred rebuilds capture the generation at
+        # schedule time and abort if it changed (accordion was cleared/rebuilt).
+        self._dup_adv_generation = getattr(self, "_dup_adv_generation", 0) + 1
         vlay = self._dup_accordion_vlayout
         while vlay.count() > 1:  # keep the trailing stretch item
             item = vlay.takeAt(0)
@@ -2094,12 +2099,22 @@ class MainWindow(QMainWindow):
             content._dup_header = header   # so a row delete can refresh the count
 
             def _toggle(checked, hdr=header, cnt=content, ttl=title, c=count):
-                if checked and not cnt._dup_table_built:
-                    self._build_one_dup_group_table(cnt)
-                    cnt._dup_table_built = True
-                cnt.setVisible(checked)
-                arrow = "▼" if checked else "▶"
-                hdr.setText(f"{arrow}  {ttl}   ({c})")
+                try:
+                    if checked and not cnt._dup_table_built:
+                        self._build_one_dup_group_table(cnt)
+                        cnt._dup_table_built = True
+                    cnt.setVisible(checked)
+                    arrow = "▼" if checked else "▶"
+                    hdr.setText(f"{arrow}  {ttl}   ({c})")
+                except Exception as e:
+                    # Never let a single group's expand crash the whole UI —
+                    # log and leave the group collapsed so the rest stays usable.
+                    self._logger.warning("Accordion expand failed: %s", e)
+                    try:
+                        cnt.setVisible(False)
+                        hdr.setChecked(False)
+                    except Exception:
+                        pass
 
             header.toggled.connect(_toggle)
             group_layout.addWidget(header)
@@ -2193,6 +2208,19 @@ class MainWindow(QMainWindow):
             group_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         content_layout.addWidget(group_table)
 
+    def _rebuild_dup_group_after_delete_guarded(self, table, track, gen):
+        """Generation-guarded entry point for the deferred post-delete rebuild.
+
+        If the accordion generation has changed since *gen* was captured (the
+        user switched sections / re-clustered / the accordion was cleared), the
+        stale singleShot is a no-op — we must not patch an accordion that no
+        longer exists (it would create orphan widgets / corrupt the layout /
+        freeze the UI on the next interaction).
+        """
+        if gen != getattr(self, "_dup_adv_generation", 0):
+            return
+        self._rebuild_dup_group_after_delete(table, track)
+
     def _rebuild_dup_group_after_delete(self, table, track):
         """After a row delete in an Advanced-Duplicates accordion group, rebuild
         JUST that group (keeping the accordion open) instead of re-clustering
@@ -2247,6 +2275,12 @@ class MainWindow(QMainWindow):
 
     def _populate_editing_table(self, tracks):
         """Fill the Editing table from a fresh list of library tracks."""
+        # Leaving Advanced Duplicates mode: fully reset the accordion state so
+        # no stale group widgets / pending deferred rebuilds / column-layout
+        # timers leak into the new mode (the root cause of the recurring
+        # freeze when switching sections after a delete in dup_adv).
+        if getattr(self, "_editing_mode", "") == "duplicates_adv":
+            self._clear_duplicate_accordion()
         self._editing_saved_paths = set()
         self._editing_sort = (None, True)
         self.editing_table.horizontalHeader().setSortIndicatorShown(False)
@@ -2629,8 +2663,12 @@ class MainWindow(QMainWindow):
             # re-cluster closed every accordion AND destroyed the delete button
             # mid-signal, freezing the UI. Deferred via singleShot(0) so the
             # button's signal handler completes before its widget is rebuilt.
+            # The generation guard cancels the rebuild if the accordion has been
+            # cleared/rebuilt since (e.g. the user switched sections and came
+            # back) so we never patch a stale accordion.
             src = table if (table is not None and hasattr(table, "_dup_content")) else None
-            QTimer.singleShot(0, lambda: self._rebuild_dup_group_after_delete(src, track))
+            gen = getattr(self, "_dup_adv_generation", 0)
+            QTimer.singleShot(0, lambda: self._rebuild_dup_group_after_delete_guarded(src, track, gen))
         else:
             entries = [e for e in self._capture_editing_entries()
                        if e["track"] is not track]
