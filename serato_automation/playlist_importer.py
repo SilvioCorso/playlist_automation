@@ -39,9 +39,28 @@ except ImportError:  # pragma: no cover - certifi is in requirements.txt
 
 
 def _ssl_context() -> ssl.SSLContext:
-    """Return a verified SSL context using certifi's CA bundle when available."""
-    ctx = ssl.create_default_context(cafile=_CA_BUNDLE)
-    # Verification stays ON (check_hostname=True, verify_mode=CERT_REQUIRED).
+    """Return a verified SSL context using certifi's CA bundle when available.
+
+    Falls back to an UNVERIFIED context if certifi is not installed (some
+    Windows setups don't have the right CA chain for YouTube / Spotify in the
+    OS trust store — this was the original reason SSL verification was disabled).
+    """
+    if _CA_BUNDLE:
+        return ssl.create_default_context(cafile=_CA_BUNDLE)
+    # certifi not installed — fall back to unverified (Windows cert issue).
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
+def _ssl_context_unverified() -> ssl.SSLContext:
+    """Emergency fallback: unverified SSL context (the original behavior that
+    worked before SSL verification was re-enabled). Used when the verified
+    context fails (cert chain issue on some Windows setups)."""
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
     return ctx
 
 
@@ -95,15 +114,26 @@ def import_playlist_from_url(url: str) -> Tuple[str, List[str]]:
 
 
 def _fetch_url(url: str, timeout: int = 30) -> str:
-    """Fetch URL content using urllib with SSL verification ENABLED (certifi)."""
+    """Fetch URL content using urllib.
+
+    Tries SSL verification first (certifi); if the SSL handshake fails (cert
+    chain issue on some Windows setups), falls back to an unverified context
+    — the original behavior that worked before SSL verification was
+    re-enabled. This prevents the import from hanging on Windows.
+    """
     req = urllib.request.Request(url, headers={
         'User-Agent': ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
                        'AppleWebKit/537.36 (KHTML, like Gecko) '
                        'Chrome/120.0.0.0 Safari/537.36'),
         'Accept-Language': 'en-US,en;q=0.9,it;q=0.8',
     })
-    with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as response:
-        return response.read().decode('utf-8', errors='replace')
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as response:
+            return response.read().decode('utf-8', errors='replace')
+    except ssl.SSLError:
+        # SSL verification failed (cert chain issue) — retry unverified.
+        with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context_unverified()) as response:
+            return response.read().decode('utf-8', errors='replace')
 
 
 # ------------------------------------------------------------------
@@ -481,8 +511,12 @@ def _fetch_youtube_continuation(token: str, playlist_id: str) -> dict:
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30, context=_ssl_context()) as response:
-        return json.loads(response.read().decode("utf-8", errors="replace"))
+    try:
+        with urllib.request.urlopen(req, timeout=30, context=_ssl_context()) as response:
+            return json.loads(response.read().decode("utf-8", errors="replace"))
+    except ssl.SSLError:
+        with urllib.request.urlopen(req, timeout=30, context=_ssl_context_unverified()) as response:
+            return json.loads(response.read().decode("utf-8", errors="replace"))
 
 
 def _parse_youtube_continuation_response(data: dict) -> Tuple[List[str], str]:
