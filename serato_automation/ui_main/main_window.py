@@ -121,6 +121,35 @@ class MainWindow(QMainWindow):
         """Handle QMediaPlayer errors without crashing — log and keep going."""
         self._logger.warning("QMediaPlayer error: %s (%s)", error_string, error)
 
+    def _safe_active_player_widget(self):
+        """Return the active PlayerCellWidget ONLY if its C++ object is still
+        alive; else clear the player state + stop and return None.
+
+        A PlayerCellWidget can be destroyed when its accordion group table is
+        rebuilt or removed (after a delete that drops the group below 2
+        members). Accessing a deleted widget raises RuntimeError under PySide6,
+        which — fired from a QMediaPlayer signal slot — corrupts the event loop
+        and freezes the UI. This guard is the root-cause fix for the recurring
+        'accordion disappears then UI freezes' crash.
+        """
+        pw = getattr(self, "_player_active_widget", None)
+        if pw is None:
+            return self._get_active_player_widget()
+        try:
+            _ = pw.slider  # probe — raises RuntimeError if the C++ object is gone
+            return pw
+        except Exception:
+            self._player_active_widget = None
+            self._player_current_row = -1
+            self._player_current_source = None
+            self._pending_player_widget = None
+            if getattr(self, "_player_available", False):
+                try:
+                    self._player.stop()
+                except Exception:
+                    pass
+            return None
+
     def _on_player_duration_changed(self, duration):
         """Media duration became known (may arrive AFTER playback starts on
         Windows). Force the active row's slider range to the real duration so
@@ -128,9 +157,12 @@ class MainWindow(QMainWindow):
         """
         if not self._player_available or duration <= 0:
             return
-        pw = getattr(self, "_player_active_widget", None) or self._get_active_player_widget()
+        pw = self._safe_active_player_widget()
         if pw:
-            pw.update_position(self._player.position(), duration)
+            try:
+                pw.update_position(self._player.position(), duration)
+            except Exception:
+                self._safe_active_player_widget()  # clears stale ref
 
     def _get_active_player_widget(self):
         """Return the PlayerCellWidget for the row currently playing.
@@ -248,12 +280,16 @@ class MainWindow(QMainWindow):
         (whichever table it lives in)."""
         if not self._player_available:
             return
-        # Use the direct widget reference first (always correct); fall back to
-        # the source-aware lookup only if the reference was lost.
-        pw = getattr(self, "_player_active_widget", None) or self._get_active_player_widget()
+        pw = self._safe_active_player_widget()
         if pw:
-            pw.set_playing(False)
-        self._player.stop()
+            try:
+                pw.set_playing(False)
+            except Exception:
+                pass
+        try:
+            self._player.stop()
+        except Exception:
+            pass
         self._player_current_row = -1
         self._player_current_source = None
         self._player_active_widget = None
@@ -294,26 +330,32 @@ class MainWindow(QMainWindow):
         """Update the slider of the currently playing row."""
         if not self._player_available:
             return
-        pw = getattr(self, "_player_active_widget", None) or self._get_active_player_widget()
+        pw = self._safe_active_player_widget()
         if pw:
-            duration = self._player.duration()
-            pw.update_position(position, duration)
+            try:
+                duration = self._player.duration()
+                pw.update_position(position, duration)
+            except Exception:
+                self._safe_active_player_widget()  # clears stale ref
 
     def _on_player_state_changed(self, state):
         """Update play/pause button when playback state changes."""
         if not self._player_available:
             return
-        pw = getattr(self, "_player_active_widget", None) or self._get_active_player_widget()
+        pw = self._safe_active_player_widget()
         if not pw:
             return
 
-        if state == QMediaPlayer.PlaybackState.PlayingState:
-            pw.set_playing(True)
-        elif state == QMediaPlayer.PlaybackState.PausedState:
-            pw.set_playing(False)
-        elif state == QMediaPlayer.PlaybackState.StoppedState:
-            pw.set_playing(False)
-            pw.update_position(0, 0)
+        try:
+            if state == QMediaPlayer.PlaybackState.PlayingState:
+                pw.set_playing(True)
+            elif state == QMediaPlayer.PlaybackState.PausedState:
+                pw.set_playing(False)
+            elif state == QMediaPlayer.PlaybackState.StoppedState:
+                pw.set_playing(False)
+                pw.update_position(0, 0)
+        except Exception:
+            self._safe_active_player_widget()  # widget destroyed mid-signal — clear
 
     def _player_cleanup(self):
         """Stop player and reset all player widgets — called on close."""
