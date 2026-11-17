@@ -2567,32 +2567,42 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # Move to the Recycle Bin. If the file is missing or already sitting in a
-        # trash folder, treat it as already deleted and keep cleaning Serato.
+        # The actual delete (Recycle Bin + Serato database/crate purge) is run
+        # OFF the GUI thread via _run_busy: rewriting Serato's database V2 is
+        # slow on large libraries and blocked the event loop, freezing the UI.
         already_trashed = ("$recycle.bin" in path.lower()
                            or "/.trash" in path.lower().replace("\\", "/"))
-        if os.path.exists(path) and not already_trashed:
-            try:
-                move_to_recycle_bin(path)
-            except Exception as e:
-                QMessageBox.critical(
-                    self, tr("title_error"), tr("edit_delete_err", error=str(e))
-                )
-                return
-
-        # Purge from Serato thoroughly: EVERY 'database V2' (the home/master library
-        # plus each per-drive one) AND every .crate file. Serato's browser reads
-        # from the master DB too, so cleaning only the music-drive DB left the
-        # track visible. Back up once per session.
         first = not getattr(self, "_delete_backup_done", False)
+
+        def _delete_work():
+            # Move to the Recycle Bin (may raise). If the file is already
+            # trashed or missing, skip straight to the Serato clean-up.
+            if os.path.exists(path) and not already_trashed:
+                move_to_recycle_bin(path)
+            # Purge from EVERY 'database V2' (home/master + per-drive) AND every
+            # .crate file so the track never reappears in Serato's browser.
+            try:
+                serato_database.remove_from_all_databases(folder, [path], backup=first)
+            except Exception as e:
+                return ("db_err", str(e))
+            try:
+                serato_database.remove_from_crates(folder, [path])
+            except Exception:
+                pass
+            return ("ok", None)
+
         try:
-            serato_database.remove_from_all_databases(folder, [path], backup=first)
-        except Exception:
-            pass
-        try:
-            serato_database.remove_from_crates(folder, [path])
-        except Exception:
-            pass
+            result = self._run_busy(tr("busy_delete"), _delete_work)
+        except Exception as e:
+            QMessageBox.critical(
+                self, tr("title_error"), tr("edit_delete_err", error=str(e))
+            )
+            return
+        if isinstance(result, tuple) and result and result[0] == "db_err":
+            QMessageBox.critical(
+                self, tr("title_error"), tr("edit_delete_err", error=result[1])
+            )
+            return
         self._delete_backup_done = True
 
         # Drop from the in-memory library + cache so it won't reappear (e.g. in
