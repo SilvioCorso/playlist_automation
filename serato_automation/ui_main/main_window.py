@@ -1759,11 +1759,52 @@ class MainWindow(QMainWindow):
             self.match_progress.setValue(current)
         self.statusBar().showMessage(message)
 
+    def _merge_serato_label_comment(self, folder: str):
+        """Read label (tlbl) and comment (tcom) from Serato's database V2 and
+        merge them into the in-memory library tracks. Values from the Serato DB
+        override the audio-file tag values because that's what the user sees in
+        Serato (they may have edited them inside Serato).
+        """
+        if not folder:
+            return
+        db_files = []
+        try:
+            db_files = serato_database.find_all_database_files(folder)
+        except Exception:
+            pass
+        if not db_files:
+            return
+        # Build a {normalized_rel_path: {"label": str, "comment": str}} map.
+        db_map = {}
+        for db_path in db_files:
+            try:
+                db_map.update(serato_database.read_database_label_comment(db_path))
+            except Exception as e:
+                self._logger.debug("Serato DB label/comment read failed (%s): %s", db_path, e)
+        if not db_map:
+            return
+        merged = 0
+        for t in self.library_tracks:
+            rel = serato_database.normalize_rel_path(t.filepath or "")
+            if rel and rel in db_map:
+                vals = db_map[rel]
+                if vals.get("label"):
+                    t.label = vals["label"]
+                if vals.get("comment"):
+                    t.comment = vals["comment"]
+                merged += 1
+        if merged:
+            self._logger.info("Label/Comment merge da Serato DB V2: %d tracce", merged)
+
     def _on_scan_finished(self, tracks):
         self._hide_busy()
         self._hotcue_cache = {}  # library changed: invalidate hotcue counts
         folder = self.music_folder_input.text().strip()
         self.library_tracks = tracks
+        # Merge label and comment from Serato's database V2 (the values the
+        # user sees in Serato, which may differ from the audio file tags if
+        # they were edited inside Serato).
+        self._merge_serato_label_comment(folder)
         self._library_cache_loaded = False
         self._refresh_library_status()
         self.btn_match.setEnabled(True)
@@ -2055,13 +2096,15 @@ class MainWindow(QMainWindow):
         self._editing_mode = "duplicates_adv"
         self.editing_status.setText(
             tr("dup_adv_status", groups=len(groups), tracks=total_tracks))
-        # Accordion view (page 1) — the flat-table toolbar (Save All / Replace /
-        # Copy / Update Serato) does not apply here: each group has its own
-        # per-row Save / Delete / Player, exactly like the flat editing table.
+        # Accordion view (page 1) — Save All / Replace / Copy don't apply (each
+        # group has its own per-row Save / Delete / Player). But Update Serato
+        # stays ENABLED: after saving a row's tags in any accordion, the user
+        # can sync the changes to Serato's database V2 with it.
         self._editing_stack.setCurrentIndex(1)
         for btn in (self._btn_edit_save_all, self._btn_edit_replace,
-                    self._btn_edit_copy, self._btn_update_serato):
+                    self._btn_edit_copy):
             btn.setEnabled(False)
+        self._btn_update_serato.setEnabled(True)
         self.tabs.setTabEnabled(2, True)
         self.tabs.setCurrentIndex(2)
 
@@ -2778,12 +2821,19 @@ class MainWindow(QMainWindow):
         saved to disk (green rows) are synced, using their in-memory tag values so
         the database stays consistent with the files.
         """
-        tracks = getattr(self, "_row_tracks", [])
+        # Gather saved tracks from ALL sources (flat editing table AND
+        # accordion group tables): use library_tracks filtered by
+        # _editing_saved_paths so saves in any accordion are included.
+        tracks = list(getattr(self, "_row_tracks", []))
+        saved_paths = getattr(self, "_editing_saved_paths", set())
+        if saved_paths:
+            lt = getattr(self, "library_tracks", [])
+            existing = set(id(t) for t in tracks)
+            for t in lt:
+                if (t.filepath or "") in saved_paths and id(t) not in existing:
+                    tracks.append(t)
         if not tracks:
             return
-
-        # Only tracks that have been saved to disk in this session.
-        saved_paths = getattr(self, "_editing_saved_paths", set())
         saved_tracks = [t for t in tracks if (t.filepath or "") in saved_paths]
         if not saved_tracks:
             QMessageBox.information(

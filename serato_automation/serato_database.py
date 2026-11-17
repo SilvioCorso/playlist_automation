@@ -30,7 +30,8 @@ logger = logging.getLogger('serato.database')
 DATABASE_FILENAME = "database V2"
 
 # otrk sub-field tags that map to the editable metadata columns.
-_FIELD_TAGS = {"title": "tsng", "artist": "tart", "album": "talb", "genre": "tgen"}
+_FIELD_TAGS = {"title": "tsng", "artist": "tart", "album": "talb", "genre": "tgen",
+               "label": "tlbl", "comment": "tcom"}
 
 
 def _iter_tlv(data: bytes):
@@ -198,6 +199,41 @@ def read_database_paths(db_path: str) -> List[str]:
 def read_database_normalized_set(db_path: str) -> set:
     """Return a set of normalized relative paths known to Serato."""
     return {normalize_rel_path(p) for p in read_database_paths(db_path)}
+
+
+def read_database_label_comment(db_path: str) -> Dict[str, Dict[str, str]]:
+    """Read label (tlbl) and comment (tcom) for every track in the Serato DB V2.
+
+    Returns {normalized_rel_path: {"label": str, "comment": str}} — values
+    are empty strings if the field is absent in the DB for that track.
+    """
+    tag_to_field = {v: k for k, v in _FIELD_TAGS.items()}
+    # Only care about label and comment.
+    wanted_tags = {"tlbl", "tcom"}
+    results: Dict[str, Dict[str, str]] = {}
+    try:
+        with open(db_path, 'rb') as f:
+            data = f.read()
+    except OSError:
+        return results
+    for tag, value in _iter_tlv(data):
+        if tag != 'otrk':
+            continue
+        rel_path = ""
+        fields: Dict[str, str] = {}
+        for sub_tag, sub_val in _iter_tlv(value):
+            if sub_tag == 'pfil':
+                rel_path = normalize_rel_path(_decode_text(sub_val))
+            elif sub_tag in wanted_tags:
+                field = tag_to_field.get(sub_tag)
+                if field:
+                    fields[field] = _decode_text(sub_val)
+        if rel_path:
+            results[rel_path] = {
+                "label": fields.get("label", ""),
+                "comment": fields.get("comment", ""),
+            }
+    return results
 
 
 # ----------------------------------------------------------------------
